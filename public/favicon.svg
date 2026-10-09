@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E8D5A7" />
+      <stop offset="100%" stop-color="#C5A15B" />
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#174D35" />
+      <stop offset="100%" stop-color="#103B2B" />
+    </linearGradient>
+  </defs>
+  <!-- Background Circle -->
+  <circle cx="50" cy="50" r="48" fill="url(#greenGrad)" />
+  <circle cx="50" cy="50" r="44" fill="none" stroke="url(#goldGrad)" stroke-width="1.5" stroke-dasharray="3 2" />
+  
+  <!-- Milk droplet / butter pot motif -->
+  <path d="M50 18 C50 18 30 42 30 58 C30 70 39 79 50 79 C61 79 70 70 70 58 C70 42 50 18 50 18 Z" fill="#FFF9F0" />
+  
+  <!-- Subtle leaf / flute / clover accent in gold -->
+  <path d="M50 36 C54 44 60 52 64 62 C57 60 48 56 46 48 C45 42 48 38 50 36 Z" fill="url(#goldGrad)" opacity="0.9" />
+  
+  <!-- Inner Milk Glow -->
+  <circle cx="43" cy="62" r="6" fill="#F1E7D5" opacity="0.8"/>
+  <circle cx="53" cy="66" r="3" fill="#C5A15B" opacity="0.6"/>
+</svg>

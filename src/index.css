@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --brand-navy: #172B55;
+    --brand-midnight: #101D3B;
+    --brand-gold: #E4C66A;
+    --brand-champagne: #F4E6B2;
+    --brand-ivory: #FFFCF5;
+    --brand-white: #FFFFFF;
+    --brand-slate: #526482;
+    --brand-gold-light: #FBF4DF;
+    --brand-success: #27845B;
+    --brand-error: #C74747;
+  }
+
+  body {
+    background-color: #FFFCF5;
+    color: #101D3B;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom scrollbar in royal gold */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(228, 198, 106, 0.4);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(228, 198, 106, 0.7);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .glass-card {
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(244, 230, 178, 0.6);
+  }
+  .glass-navy {
+    background: rgba(16, 29, 59, 0.96);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(228, 198, 106, 0.25);
+  }
+}
+
+/* Print styles for crisp A4 / Receipt print */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 12pt;
+  }
+  .no-print,
+  nav,
+  aside,
+  header,
+  .mobile-nav,
+  .toast-container,
+  button:not(.allow-print) {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .print-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+  @page {
+    margin: 1.5cm;
+    size: A4 portrait;
+  }
+}
