@@ -347,17 +347,17 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_movements ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Full access to business_settings" ON business_settings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to customers" ON customers FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to products" ON products FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to price_history" ON price_history FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to subscriptions" ON subscriptions FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to delivery_records" ON delivery_records FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to sales" ON sales FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to payments" ON payments FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to invoices" ON invoices FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to stock_items" ON stock_items FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to stock_movements" ON stock_movements FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Authenticated admins only for business_settings" ON business_settings FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for customers" ON customers FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for products" ON products FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for price_history" ON price_history FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for subscriptions" ON subscriptions FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for delivery_records" ON delivery_records FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for sales" ON sales FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for payments" ON payments FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for invoices" ON invoices FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for stock_items" ON stock_items FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for stock_movements" ON stock_movements FOR ALL TO authenticated USING (auth.role() = 'authenticated');
 
 ALTER TABLE business_settings REPLICA IDENTITY FULL;
 ALTER TABLE customers REPLICA IDENTITY FULL;

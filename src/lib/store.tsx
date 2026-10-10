@@ -61,6 +61,8 @@ interface StoreContextType {
   settings: BusinessSettings;
   isAuthenticated: boolean;
   adminUser: { name: string; email: string; role: string } | null;
+  authMode: 'cloud' | 'local';
+  supabaseUser: any;
 
   // Cloud Sync State
   syncStatus: SyncStatus;
@@ -73,7 +75,10 @@ interface StoreContextType {
 
   // Auth methods
   login: (pinOrPass: string) => boolean;
-  logout: () => void;
+  loginWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  signUpOwnerAccount: (email: string, password: string, fullName?: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithPin: (pin: string) => boolean;
+  logout: () => Promise<void>;
 
   // Customer methods
   addCustomer: (customer: Omit<Customer, 'id' | 'createdAt' | 'updatedAt'>) => Customer;
@@ -201,9 +206,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return saved ? JSON.parse(saved) : initialBusinessSettings;
   });
 
+  const [authMode, setAuthMode] = useState<'cloud' | 'local'>('local');
+  const [supabaseUser, setSupabaseUser] = useState<any>(null);
+
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.AUTH);
-    return saved ? JSON.parse(saved).isAuth : true;
+    return saved ? JSON.parse(saved).isAuth : false;
   });
 
   // Cloud Sync State
@@ -215,6 +223,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const isCloudConnected = syncStatus === 'connected';
   const realtimeChannelRef = useRef<any>(null);
+
+  // Check Supabase Auth Session on Mount
+  useEffect(() => {
+    const client = getSupabaseClient();
+    if (client) {
+      client.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          setSupabaseUser(session.user);
+          setIsAuthenticated(true);
+          setAuthMode('cloud');
+        }
+      });
+
+      const { data: { subscription } } = client.auth.onAuthStateChange((event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+          setSupabaseUser(session.user);
+          setIsAuthenticated(true);
+          setAuthMode('cloud');
+        } else if (event === 'SIGNED_OUT') {
+          setSupabaseUser(null);
+          setIsAuthenticated(false);
+          setAuthMode('local');
+        }
+      });
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    }
+  }, []);
 
   // 2. Local Persistence Side Effects
   useEffect(() => {
@@ -334,6 +372,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [customers, subscriptions, products, priceHistory, deliveries, sales, payments, invoices, stockItems, stockMovements, settings]);
 
   const uploadLocalToCloudAction = useCallback(async () => {
+    // 1. Create a safe local protective backup before sending data to cloud
+    try {
+      const backupSnapshot = exportDataJSON();
+      localStorage.setItem('skd_backup_pre_migration_v1', backupSnapshot);
+      localStorage.setItem('skd_backup_pre_migration_time', new Date().toISOString());
+    } catch (e) {
+      console.warn('Could not save pre-migration backup to localStorage:', e);
+    }
+
     setSyncStatus('syncing');
     const result = await uploadAllDataToCloud({
       customers,
@@ -561,22 +608,111 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   // 4. Auth Actions
-  const login = (pinOrPass: string): boolean => {
-    if (pinOrPass === '1234' || pinOrPass.toLowerCase() === 'admin' || pinOrPass.length >= 4) {
+  const loginWithEmail = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const client = getSupabaseClient();
+    if (!client) {
+      return {
+        success: false,
+        error: 'Supabase cloud database is not connected. Please connect Supabase in Settings or use Owner Security PIN.'
+      };
+    }
+
+    try {
+      const { data, error } = await client.auth.signInWithPassword({
+        email: email.trim(),
+        password
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      setSupabaseUser(data.user);
       setIsAuthenticated(true);
+      setAuthMode('cloud');
+      syncNow();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Authentication error' };
+    }
+  };
+
+  const signUpOwnerAccount = async (
+    email: string,
+    password: string,
+    fullName?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const client = getSupabaseClient();
+    if (!client) {
+      return {
+        success: false,
+        error: 'Supabase cloud database is not connected. Please connect Supabase in Settings.'
+      };
+    }
+
+    try {
+      const { data, error } = await client.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: fullName || 'S. Radhakrishnan',
+            role: 'admin'
+          }
+        }
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (data.session) {
+        setSupabaseUser(data.user);
+        setIsAuthenticated(true);
+        setAuthMode('cloud');
+        syncNow();
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to create owner account' };
+    }
+  };
+
+  const loginWithPin = (pin: string): boolean => {
+    if (pin === '1234' || pin.toLowerCase() === 'admin' || pin.length >= 4) {
+      setIsAuthenticated(true);
+      setAuthMode('local');
       return true;
     }
     return false;
   };
 
-  const logout = () => {
-    setIsAuthenticated(false);
+  const login = (pinOrPass: string): boolean => {
+    return loginWithPin(pinOrPass);
   };
 
-  // Keep adminUser synced with settings.ownerName
+  const logout = async () => {
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        await client.auth.signOut();
+      } catch (err) {
+        console.warn('Sign out error:', err);
+      }
+    }
+    setSupabaseUser(null);
+    setIsAuthenticated(false);
+    setAuthMode('local');
+  };
+
+  // Keep adminUser synced with settings.ownerName and supabaseUser
   const adminUser = {
-    name: settings.ownerName || 'S. Radhakrishnan',
-    email: settings.email || 'owner@sreekrishnadairy.com',
+    name: supabaseUser?.user_metadata?.full_name || settings.ownerName || 'S. Radhakrishnan',
+    email: supabaseUser?.email || settings.email || 'owner@sreekrishnadairy.com',
     role: 'Business Owner / Admin'
   };
 
@@ -1208,6 +1344,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         settings,
         isAuthenticated,
         adminUser,
+        authMode,
+        supabaseUser,
         syncStatus,
         isCloudConnected,
         lastSyncedAt,
@@ -1216,6 +1354,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         uploadLocalToCloud: uploadLocalToCloudAction,
         reconnectCloud,
         login,
+        loginWithEmail,
+        signUpOwnerAccount,
+        loginWithPin,
         logout,
         addCustomer,
         updateCustomer,

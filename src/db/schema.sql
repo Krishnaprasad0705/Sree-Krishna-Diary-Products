@@ -202,7 +202,8 @@ CREATE TABLE IF NOT EXISTS stock_movements (
     notes TEXT
 );
 
--- 11. ROW LEVEL SECURITY (RLS) POLICIES
+-- 11. STRICT ROW LEVEL SECURITY (RLS) POLICIES
+-- All tables deny public/anonymous access and require authenticated admin sessions.
 ALTER TABLE business_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
@@ -215,7 +216,7 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_movements ENABLE ROW LEVEL SECURITY;
 
--- Allow full access to anon and authenticated roles with Supabase API keys
+-- Drop any previous permissive policies
 DO $$
 BEGIN
     DROP POLICY IF EXISTS "Full access to business_settings" ON business_settings;
@@ -229,19 +230,32 @@ BEGIN
     DROP POLICY IF EXISTS "Full access to invoices" ON invoices;
     DROP POLICY IF EXISTS "Full access to stock_items" ON stock_items;
     DROP POLICY IF EXISTS "Full access to stock_movements" ON stock_movements;
+    
+    DROP POLICY IF EXISTS "Authenticated admins only for business_settings" ON business_settings;
+    DROP POLICY IF EXISTS "Authenticated admins only for customers" ON customers;
+    DROP POLICY IF EXISTS "Authenticated admins only for products" ON products;
+    DROP POLICY IF EXISTS "Authenticated admins only for price_history" ON price_history;
+    DROP POLICY IF EXISTS "Authenticated admins only for subscriptions" ON subscriptions;
+    DROP POLICY IF EXISTS "Authenticated admins only for delivery_records" ON delivery_records;
+    DROP POLICY IF EXISTS "Authenticated admins only for sales" ON sales;
+    DROP POLICY IF EXISTS "Authenticated admins only for payments" ON payments;
+    DROP POLICY IF EXISTS "Authenticated admins only for invoices" ON invoices;
+    DROP POLICY IF EXISTS "Authenticated admins only for stock_items" ON stock_items;
+    DROP POLICY IF EXISTS "Authenticated admins only for stock_movements" ON stock_movements;
 END $$;
 
-CREATE POLICY "Full access to business_settings" ON business_settings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to customers" ON customers FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to products" ON products FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to price_history" ON price_history FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to subscriptions" ON subscriptions FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to delivery_records" ON delivery_records FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to sales" ON sales FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to payments" ON payments FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to invoices" ON invoices FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to stock_items" ON stock_items FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Full access to stock_movements" ON stock_movements FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+-- Enforce strictly authenticated admin access (anon role is completely blocked)
+CREATE POLICY "Authenticated admins only for business_settings" ON business_settings FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for customers" ON customers FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for products" ON products FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for price_history" ON price_history FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for subscriptions" ON subscriptions FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for delivery_records" ON delivery_records FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for sales" ON sales FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for payments" ON payments FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for invoices" ON invoices FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for stock_items" ON stock_items FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Authenticated admins only for stock_movements" ON stock_movements FOR ALL TO authenticated USING (auth.role() = 'authenticated');
 
 -- 12. FULL REPLICA IDENTITY (Required for Supabase Realtime UPDATE & DELETE payloads)
 ALTER TABLE business_settings REPLICA IDENTITY FULL;

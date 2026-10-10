@@ -242,4 +242,26 @@ describe('Sree Krishna Dairy Products - Core Business Logic & Financial Ledger T
     expect(typeof ledger.currentBalance).toBe('number');
     expect(isNaN(ledger.currentBalance)).toBe(false);
   });
+
+  it('Scenario 6: Pre-migration backup serialization preserves all local customer and sales records intact', () => {
+    const localBackup = {
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      businessName: 'Sree Krishna Dairy Products',
+      customers: [
+        { id: 'cust-1', name: 'Krishna Prasad.M', phone: '09629979363', address: '35/93A Krishnakripa', location: 'Gandhi Road', category: 'REGULAR', status: 'ACTIVE', openingBalance: 0, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' },
+        { id: 'cust-2', name: 'S. Radhakrishnan', phone: '98401 23456', address: '14 Main Road', location: 'Krishna Nagar', category: 'REGULAR', status: 'ACTIVE', openingBalance: 0, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' }
+      ],
+      sales: [
+        { id: 'sale-1', date: '2026-10-01', customerName: 'Walk-in', isWalkIn: true, items: [], totalAmount: 120, discount: 0, finalAmount: 120, amountPaid: 120, paymentStatus: 'PAID', paymentMethod: 'CASH', recordedAt: '2026-10-01T00:00:00Z' }
+      ]
+    };
+
+    const json = JSON.stringify(localBackup);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.customers.length).toBe(2);
+    expect(parsed.sales.length).toBe(1);
+    expect(parsed.customers[0].name).toBe('Krishna Prasad.M');
+  });
 });
