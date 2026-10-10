@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   Customer,
   Subscription,
@@ -26,6 +26,25 @@ import {
   initialStockItems
 } from './initialData';
 import { calculateCustomerLedger, getLocalDateString } from './calculations';
+import { getSupabaseClient, isSupabaseConfigured } from './supabase';
+import {
+  fetchAllCloudData,
+  uploadAllDataToCloud,
+  cloudSync,
+  transformCustomerFromDb,
+  transformSubscriptionFromDb,
+  transformProductFromDb,
+  transformPriceHistoryFromDb,
+  transformDeliveryFromDb,
+  transformSaleFromDb,
+  transformPaymentFromDb,
+  transformInvoiceFromDb,
+  transformStockItemFromDb,
+  transformStockMovementFromDb,
+  transformSettingsFromDb
+} from './cloudSync';
+
+export type SyncStatus = 'connected' | 'syncing' | 'offline' | 'error' | 'unconfigured';
 
 interface StoreContextType {
   // State
@@ -42,6 +61,15 @@ interface StoreContextType {
   settings: BusinessSettings;
   isAuthenticated: boolean;
   adminUser: { name: string; email: string; role: string } | null;
+
+  // Cloud Sync State
+  syncStatus: SyncStatus;
+  isCloudConnected: boolean;
+  lastSyncedAt: string | null;
+  syncError: string | null;
+  syncNow: () => Promise<void>;
+  uploadLocalToCloud: () => Promise<{ success: boolean; count: number; error?: string }>;
+  reconnectCloud: () => Promise<void>;
 
   // Auth methods
   login: (pinOrPass: string) => boolean;
@@ -117,7 +145,7 @@ const STORAGE_KEYS = {
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // 1. Initial State Load with Fallback to seed data
+  // 1. Initial State Load with Fallback to local cache / seed data
   const [customers, setCustomers] = useState<Customer[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
     return saved ? JSON.parse(saved) : initialCustomers;
@@ -175,12 +203,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.AUTH);
-    return saved ? JSON.parse(saved).isAuth : true; // default authenticated for seamless experience
+    return saved ? JSON.parse(saved).isAuth : true;
   });
 
-  // adminUser is derived dynamically from settings.ownerName and settings.email
+  // Cloud Sync State
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() =>
+    isSupabaseConfigured() ? 'syncing' : 'unconfigured'
+  );
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
-  // 2. Persistence Side Effects
+  const isCloudConnected = syncStatus === 'connected';
+  const realtimeChannelRef = useRef<any>(null);
+
+  // 2. Local Persistence Side Effects
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(customers));
   }, [customers]);
@@ -229,7 +265,302 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     localStorage.setItem(STORAGE_KEYS.AUTH, JSON.stringify({ isAuth: isAuthenticated }));
   }, [isAuthenticated]);
 
-  // 3. Auth Actions
+  // 3. Cloud Synchronization & Realtime Subscriptions
+  const syncNow = useCallback(async () => {
+    const client = getSupabaseClient();
+    if (!client) {
+      setSyncStatus('unconfigured');
+      return;
+    }
+
+    setSyncStatus('syncing');
+    setSyncError(null);
+
+    try {
+      const cloudData = await fetchAllCloudData();
+      if (!cloudData) {
+        setSyncStatus('offline');
+        return;
+      }
+
+      if (cloudData.isEmptyDatabase) {
+        // Fresh database: Automatically migrate local data to cloud
+        console.log('Detected empty cloud database. Performing automatic zero-loss migration...');
+        const res = await uploadAllDataToCloud({
+          customers,
+          subscriptions,
+          products,
+          priceHistory,
+          deliveries,
+          sales,
+          payments,
+          invoices,
+          stockItems,
+          stockMovements,
+          settings
+        });
+
+        if (res.success) {
+          setSyncStatus('connected');
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        } else {
+          setSyncStatus('error');
+          setSyncError(res.error || 'Initial migration failed');
+        }
+      } else {
+        // Cloud database has data: Reconcile and update local state
+        setCustomers(cloudData.customers);
+        setSubscriptions(cloudData.subscriptions);
+        setProducts(cloudData.products);
+        setPriceHistory(cloudData.priceHistory);
+        setDeliveries(cloudData.deliveries);
+        setSales(cloudData.sales);
+        setPayments(cloudData.payments);
+        setInvoices(cloudData.invoices);
+        setStockItems(cloudData.stockItems);
+        setStockMovements(cloudData.stockMovements);
+        if (cloudData.settings) {
+          setSettings(cloudData.settings);
+        }
+
+        setSyncStatus('connected');
+        setLastSyncedAt(new Date().toLocaleTimeString());
+      }
+    } catch (err: any) {
+      console.warn('Cloud sync error:', err);
+      setSyncStatus('error');
+      setSyncError(err?.message || 'Failed to sync with cloud database');
+    }
+  }, [customers, subscriptions, products, priceHistory, deliveries, sales, payments, invoices, stockItems, stockMovements, settings]);
+
+  const uploadLocalToCloudAction = useCallback(async () => {
+    setSyncStatus('syncing');
+    const result = await uploadAllDataToCloud({
+      customers,
+      subscriptions,
+      products,
+      priceHistory,
+      deliveries,
+      sales,
+      payments,
+      invoices,
+      stockItems,
+      stockMovements,
+      settings
+    });
+
+    if (result.success) {
+      setSyncStatus('connected');
+      setLastSyncedAt(new Date().toLocaleTimeString());
+    } else {
+      setSyncStatus('error');
+      setSyncError(result.error || 'Failed to upload local data');
+    }
+    return result;
+  }, [customers, subscriptions, products, priceHistory, deliveries, sales, payments, invoices, stockItems, stockMovements, settings]);
+
+  const reconnectCloud = useCallback(async () => {
+    if (realtimeChannelRef.current) {
+      try {
+        const client = getSupabaseClient();
+        if (client) client.removeChannel(realtimeChannelRef.current);
+      } catch {}
+    }
+    await syncNow();
+  }, [syncNow]);
+
+  // Realtime subscription setup
+  useEffect(() => {
+    const client = getSupabaseClient();
+    if (!client) {
+      setSyncStatus('unconfigured');
+      return;
+    }
+
+    // Initial sync
+    syncNow();
+
+    // Subscribe to multi-table realtime updates
+    const channel = client
+      .channel('skdp-realtime-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'customers' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformCustomerFromDb(payload.new);
+            setCustomers(prev => {
+              const idx = prev.findIndex(c => c.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = String(payload.old.id);
+            setCustomers(prev => prev.filter(c => c.id !== deletedId));
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'subscriptions' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformSubscriptionFromDb(payload.new);
+            setSubscriptions(prev => {
+              const idx = prev.findIndex(s => s.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = String(payload.old.id);
+            setSubscriptions(prev => prev.filter(s => s.id !== deletedId));
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_records' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformDeliveryFromDb(payload.new);
+            setDeliveries(prev => {
+              const idx = prev.findIndex(d => d.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = String(payload.old.id);
+            setDeliveries(prev => prev.filter(d => d.id !== deletedId));
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'sales' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformSaleFromDb(payload.new);
+            setSales(prev => {
+              const idx = prev.findIndex(s => s.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = String(payload.old.id);
+            setSales(prev => prev.filter(s => s.id !== deletedId));
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'payments' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformPaymentFromDb(payload.new);
+            setPayments(prev => {
+              const idx = prev.findIndex(p => p.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = String(payload.old.id);
+            setPayments(prev => prev.filter(p => p.id !== deletedId));
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'invoices' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformInvoiceFromDb(payload.new);
+            setInvoices(prev => {
+              const idx = prev.findIndex(inv => inv.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = String(payload.old.id);
+            setInvoices(prev => prev.filter(inv => inv.id !== deletedId));
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformProductFromDb(payload.new);
+            setProducts(prev => {
+              const idx = prev.findIndex(p => p.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'business_settings' },
+        payload => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const updated = transformSettingsFromDb(payload.new);
+            setSettings(updated);
+          }
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        }
+      )
+      .subscribe(status => {
+        if (status === 'SUBSCRIBED') {
+          setSyncStatus('connected');
+        } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+          setSyncStatus('offline');
+        }
+      });
+
+    realtimeChannelRef.current = channel;
+
+    return () => {
+      if (channel) client.removeChannel(channel);
+    };
+  }, []);
+
+  // 4. Auth Actions
   const login = (pinOrPass: string): boolean => {
     if (pinOrPass === '1234' || pinOrPass.toLowerCase() === 'admin' || pinOrPass.length >= 4) {
       setIsAuthenticated(true);
@@ -249,7 +580,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     role: 'Business Owner / Admin'
   };
 
-  // 4. Customer Actions
+  // 5. Customer Actions
   const addCustomer = (customerData: Omit<Customer, 'id' | 'createdAt' | 'updatedAt'>): Customer => {
     const newCustomer: Customer = {
       ...customerData,
@@ -258,18 +589,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updatedAt: new Date().toISOString(),
     };
     setCustomers(prev => [newCustomer, ...prev]);
+    cloudSync.upsertCustomer(newCustomer);
     return newCustomer;
   };
 
   const updateCustomer = (id: string, updates: Partial<Customer>) => {
+    let updatedCustomer: Customer | undefined;
     setCustomers(prev =>
-      prev.map(c => (c.id === id ? { ...c, ...updates, updatedAt: new Date().toISOString() } : c))
+      prev.map(c => {
+        if (c.id === id) {
+          updatedCustomer = { ...c, ...updates, updatedAt: new Date().toISOString() };
+          return updatedCustomer;
+        }
+        return c;
+      })
     );
+    if (updatedCustomer) {
+      cloudSync.upsertCustomer(updatedCustomer);
+    }
   };
 
   const archiveCustomer = (id: string) => {
     updateCustomer(id, { status: 'ARCHIVED' });
-    // Also pause subscription if any
     const sub = subscriptions.find(s => s.customerId === id);
     if (sub && sub.status === 'ACTIVE') {
       pauseSubscription(sub.id);
@@ -277,10 +618,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const deleteCustomer = (id: string, force: boolean = true): { success: boolean; error?: string } => {
-    // Clean up customer and all linked records
     setCustomers(prev => prev.filter(c => c.id !== id));
     setSubscriptions(prev => prev.filter(s => s.customerId !== id));
-    
+    cloudSync.deleteCustomer(id);
+
     if (force) {
       setDeliveries(prev => prev.filter(d => d.customerId !== id));
       setPayments(prev => prev.filter(p => p.customerId !== id));
@@ -289,7 +630,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { success: true };
   };
 
-  // 5. Subscription Actions
+  // 6. Subscription Actions
   const addSubscription = (subData: Omit<Subscription, 'id' | 'updatedAt'>): Subscription => {
     const newSub: Subscription = {
       ...subData,
@@ -297,17 +638,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updatedAt: new Date().toISOString(),
     };
     setSubscriptions(prev => {
-      // Remove any existing subscription for this customer to prevent duplicates
       const filtered = prev.filter(s => s.customerId !== subData.customerId);
       return [newSub, ...filtered];
     });
+    cloudSync.upsertSubscription(newSub);
     return newSub;
   };
 
   const updateSubscription = (id: string, updates: Partial<Subscription>) => {
+    let updatedSub: Subscription | undefined;
     setSubscriptions(prev =>
-      prev.map(s => (s.id === id ? { ...s, ...updates, updatedAt: new Date().toISOString() } : s))
+      prev.map(s => {
+        if (s.id === id) {
+          updatedSub = { ...s, ...updates, updatedAt: new Date().toISOString() };
+          return updatedSub;
+        }
+        return s;
+      })
     );
+    if (updatedSub) {
+      cloudSync.upsertSubscription(updatedSub);
+    }
   };
 
   const pauseSubscription = (id: string) => {
@@ -325,7 +676,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  // 6. Delivery Actions
+  // 7. Delivery Actions
   const recordDelivery = (deliveryData: Omit<DeliveryRecord, 'id' | 'recordedAt'>): DeliveryRecord => {
     const cust = customers.find(c => c.id === deliveryData.customerId);
     const newDelivery: DeliveryRecord = {
@@ -335,15 +686,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       recordedAt: new Date().toISOString(),
     };
 
-    // Update or insert delivery for this customer and date
     setDeliveries(prev => {
       const filtered = prev.filter(
         d => !(d.date === deliveryData.date && d.customerId === deliveryData.customerId)
       );
       return [newDelivery, ...filtered];
     });
+    cloudSync.upsertDelivery(newDelivery);
 
-    // Stock deduction if tracking enabled
     if (settings.enableStockTracking) {
       const totalVolumeLiters = (deliveryData.quantityMl + deliveryData.extraQuantityMl) / 1000;
       adjustStock('prod-milk', -totalVolumeLiters, 'DELIVERY_DEDUCTION', `Daily delivery for ${newDelivery.customerName}`);
@@ -364,24 +714,35 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
 
     setDeliveries(prev => {
-      // Remove overlapping records for those customer-date pairs
       const keys = new Set(createdRecords.map(cr => `${cr.date}_${cr.customerId}`));
       const kept = prev.filter(p => !keys.has(`${p.date}_${p.customerId}`));
       return [...createdRecords, ...kept];
     });
+    cloudSync.upsertBulkDeliveries(createdRecords);
   };
 
   const updateDelivery = (id: string, updates: Partial<DeliveryRecord>) => {
+    let updatedDel: DeliveryRecord | undefined;
     setDeliveries(prev =>
-      prev.map(d => (d.id === id ? { ...d, ...updates } : d))
+      prev.map(d => {
+        if (d.id === id) {
+          updatedDel = { ...d, ...updates };
+          return updatedDel;
+        }
+        return d;
+      })
     );
+    if (updatedDel) {
+      cloudSync.upsertDelivery(updatedDel);
+    }
   };
 
   const deleteDelivery = (id: string) => {
     setDeliveries(prev => prev.filter(d => d.id !== id));
+    cloudSync.deleteDelivery(id);
   };
 
-  // 7. Sales & POS Actions
+  // 8. Sales & POS Actions
   const recordSale = (saleData: Omit<Sale, 'id' | 'recordedAt'>): Sale => {
     const saleId = `sale-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
     const recordedAt = new Date().toISOString();
@@ -394,17 +755,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       recordedAt,
     };
 
-    setSales(prev => {
-      const nextSales = [newSale, ...prev];
-      try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(nextSales));
-      } catch (err) {
-        console.warn('Failed to immediately persist sale:', err);
-      }
-      return nextSales;
-    });
+    setSales(prev => [newSale, ...prev]);
+    cloudSync.upsertSale(newSale);
 
-    // If walk-in sale paid at POS, or customer sale paid at POS
     if (settings.enableStockTracking && Array.isArray(saleData.items)) {
       saleData.items.forEach(item => {
         const liters = (Number(item.quantityMl) || 0) / 1000;
@@ -419,9 +772,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const deleteSale = (id: string) => {
     setSales(prev => prev.filter(s => s.id !== id));
+    cloudSync.deleteSale(id);
   };
 
-  // 8. Payment Actions
+  // 9. Payment Actions
   const recordPayment = (paymentData: Omit<Payment, 'id' | 'recordedAt'>): Payment => {
     const cust = customers.find(c => c.id === paymentData.customerId);
     const newPayment: Payment = {
@@ -432,20 +786,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     setPayments(prev => [newPayment, ...prev]);
+    cloudSync.upsertPayment(newPayment);
 
-    // If payment is explicitly linked to an invoice, update invoice remaining amount
     if (paymentData.invoiceId) {
       setInvoices(prev =>
         prev.map(inv => {
           if (inv.id === paymentData.invoiceId) {
             const newAllocated = inv.paymentsAllocated + paymentData.amount;
             const newRemaining = Math.max(0, inv.totalPayable - newAllocated);
-            return {
+            const updatedInv: Invoice = {
               ...inv,
               paymentsAllocated: newAllocated,
               remainingDue: newRemaining,
               status: newRemaining <= 0 ? 'PAID' : 'PARTIALLY_PAID'
             };
+            cloudSync.upsertInvoice(updatedInv);
+            return updatedInv;
           }
           return inv;
         })
@@ -457,9 +813,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const deletePayment = (id: string) => {
     setPayments(prev => prev.filter(p => p.id !== id));
+    cloudSync.deletePayment(id);
   };
 
-  // 9. Invoice Generation
+  // 10. Invoice Generation
   const generateInvoice = (
     customerId: string,
     periodStart: string,
@@ -472,12 +829,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const sub = subscriptions.find(s => s.customerId === customerId);
     const isFixedSubscription = sub?.pricingModel === 'FIXED_RECURRING';
 
-    // 1. Deliveries in range
     const periodDeliveries = deliveries.filter(
       d => d.customerId === customerId && d.date >= periodStart && d.date <= periodEnd
     );
 
-    // 2. Extra milk in range
     const periodSales = sales.filter(
       s => s.customerId === customerId && s.date >= periodStart && s.date <= periodEnd
     );
@@ -489,7 +844,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const lineItems: InvoiceLineItem[] = [];
 
     if (isFixedSubscription) {
-      // Model B: Fixed subscription
       const fixedAmount = sub?.fixedMonthlyAmount || 0;
       subscriptionCharges = fixedAmount;
       lineItems.push({
@@ -501,7 +855,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         type: 'SUBSCRIPTION_FIXED'
       });
 
-      // Extra milk during this period
       periodDeliveries.forEach(del => {
         if (del.extraQuantityMl > 0) {
           const amt = (del.extraQuantityMl / 1000) * del.unitPricePerLiter;
@@ -518,7 +871,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       });
     } else {
-      // Model A: Actual delivery
       let totalStdMl = 0;
       let totalExtraMl = 0;
       let stdAmount = 0;
@@ -560,7 +912,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
 
-    // Direct Sales / Ghee line items
     periodSales.forEach(s => {
       s.items.forEach(item => {
         const isGhee = item.productName.toLowerCase().includes('ghee');
@@ -581,13 +932,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
     });
 
-    // 3. Payments made in this period
     const periodPayments = payments.filter(
       p => p.customerId === customerId && p.date >= periodStart && p.date <= periodEnd
     );
     const paymentsAllocated = periodPayments.reduce((sum, p) => sum + p.amount, 0);
 
-    const totalPayable = subscriptionCharges + extraMilkCharges + gheeCharges + (isFixedSubscription ? 0 : 0);
+    const totalPayable = subscriptionCharges + extraMilkCharges + gheeCharges;
     const remainingDue = Math.max(0, totalPayable - paymentsAllocated);
 
     const invoiceNumber = `${settings.invoicePrefix}-${periodStart.replace(/-/g, '').slice(0, 6)}-${String(invoices.length + 1).padStart(3, '0')}`;
@@ -619,6 +969,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     setInvoices(prev => [newInvoice, ...prev]);
+    cloudSync.upsertInvoice(newInvoice);
     return newInvoice;
   };
 
@@ -626,7 +977,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let count = 0;
     const activeSubCustomers = customers.filter(c => c.status === 'ACTIVE' && c.category === 'REGULAR');
     activeSubCustomers.forEach(c => {
-      // Check if invoice already generated for this customer and period
       const existing = invoices.find(
         inv => inv.customerId === c.id && inv.periodStart === periodStart && inv.periodEnd === periodEnd
       );
@@ -639,16 +989,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const updateInvoiceStatus = (id: string, status: Invoice['status']) => {
+    let updatedInv: Invoice | undefined;
     setInvoices(prev =>
-      prev.map(inv => (inv.id === id ? { ...inv, status } : inv))
+      prev.map(inv => {
+        if (inv.id === id) {
+          updatedInv = { ...inv, status };
+          return updatedInv;
+        }
+        return inv;
+      })
     );
+    if (updatedInv) {
+      cloudSync.upsertInvoice(updatedInv);
+    }
   };
 
   const deleteInvoice = (id: string) => {
     setInvoices(prev => prev.filter(inv => inv.id !== id));
+    cloudSync.deleteInvoice(id);
   };
 
-  // 10. Product & Price Actions
+  // 11. Product & Price Actions
   const updateProductPrice = (productId: string, newPricePerLiter: number, reason?: string) => {
     const prod = products.find(p => p.id === productId);
     if (!prod) return;
@@ -656,7 +1017,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const oldPrice = prod.currentPricePerLiter;
     if (oldPrice === newPricePerLiter) return;
 
-    // Log to price history to preserve old transactions
     const historyEntry: PriceHistory = {
       id: `ph-${Date.now()}`,
       productId,
@@ -669,8 +1029,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     setPriceHistory(prev => [historyEntry, ...prev]);
+    cloudSync.upsertPriceHistory(historyEntry);
 
-    // Update product & packages proportionally
+    let updatedProduct: Product | undefined;
     setProducts(prev =>
       prev.map(p => {
         if (p.id === productId) {
@@ -678,25 +1039,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             ...pkg,
             price: Math.round((pkg.volumeMl / 1000) * newPricePerLiter)
           }));
-          return {
+          updatedProduct = {
             ...p,
             currentPricePerLiter: newPricePerLiter,
             packages: updatedPackages
           };
+          return updatedProduct;
         }
         return p;
       })
     );
+    if (updatedProduct) {
+      cloudSync.upsertProduct(updatedProduct);
+    }
 
-    // Update default in settings if milk
     if (prod.type === 'MILK') {
-      setSettings(prev => ({ ...prev, defaultMilkRatePerLiter: newPricePerLiter }));
+      updateSettings({ defaultMilkRatePerLiter: newPricePerLiter });
     } else if (prod.type === 'GHEE') {
-      setSettings(prev => ({ ...prev, defaultGheeRatePerLiter: newPricePerLiter }));
+      updateSettings({ defaultGheeRatePerLiter: newPricePerLiter });
     }
   };
 
-  // 11. Stock Actions
+  // 12. Stock Actions
   const adjustStock = (
     productId: string,
     adjustmentLiters: number,
@@ -706,31 +1070,35 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const prod = products.find(p => p.id === productId);
     const prodName = prod?.name || 'Dairy Product';
 
+    let updatedStockItem: StockItem | undefined;
     setStockItems(prev => {
       const existing = prev.find(item => item.productId === productId);
       if (existing) {
-        return prev.map(item =>
-          item.productId === productId
-            ? {
-                ...item,
-                currentStockLiters: Math.max(0, item.currentStockLiters + adjustmentLiters),
-                lastUpdated: new Date().toISOString()
-              }
-            : item
-        );
-      } else {
-        return [
-          ...prev,
-          {
-            id: `stock-${productId}`,
-            productId,
-            productName: prodName,
-            currentStockLiters: Math.max(0, adjustmentLiters),
-            lastUpdated: new Date().toISOString()
+        return prev.map(item => {
+          if (item.productId === productId) {
+            updatedStockItem = {
+              ...item,
+              currentStockLiters: Math.max(0, item.currentStockLiters + adjustmentLiters),
+              lastUpdated: new Date().toISOString()
+            };
+            return updatedStockItem;
           }
-        ];
+          return item;
+        });
+      } else {
+        updatedStockItem = {
+          id: `stock-${productId}`,
+          productId,
+          productName: prodName,
+          currentStockLiters: Math.max(0, adjustmentLiters),
+          lastUpdated: new Date().toISOString()
+        };
+        return [...prev, updatedStockItem];
       }
     });
+    if (updatedStockItem) {
+      cloudSync.upsertStockItem(updatedStockItem);
+    }
 
     const movement: StockMovement = {
       id: `mov-${Date.now()}`,
@@ -743,11 +1111,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     setStockMovements(prev => [movement, ...prev]);
+    cloudSync.upsertStockMovement(movement);
   };
 
-  // 12. Settings & Backup
+  // 13. Settings & Backup
   const updateSettings = (newSettings: Partial<BusinessSettings>) => {
-    setSettings(prev => ({ ...prev, ...newSettings }));
+    const nextSettings = { ...settings, ...newSettings };
+    setSettings(nextSettings);
+    cloudSync.upsertSettings(nextSettings);
   };
 
   const resetToDefaultData = () => {
@@ -806,7 +1177,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  // 13. Getters
+  // 14. Getters
   const getCustomerById = (id: string) => customers.find(c => c.id === id);
   const getSubscriptionByCustomerId = (customerId: string) => subscriptions.find(s => s.customerId === customerId);
 
@@ -837,6 +1208,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         settings,
         isAuthenticated,
         adminUser,
+        syncStatus,
+        isCloudConnected,
+        lastSyncedAt,
+        syncError,
+        syncNow,
+        uploadLocalToCloud: uploadLocalToCloudAction,
+        reconnectCloud,
         login,
         logout,
         addCustomer,

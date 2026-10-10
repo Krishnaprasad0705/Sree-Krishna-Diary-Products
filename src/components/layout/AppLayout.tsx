@@ -21,11 +21,14 @@ import {
   ChevronRight,
   ShieldCheck,
   Milk,
-  Boxes
+  Boxes,
+  RefreshCw,
+  Wifi,
+  WifiOff,
+  CheckCircle2
 } from 'lucide-react';
 import { Logo } from '../brand/Logo';
 import { useStore } from '../../lib/store';
-import { isSupabaseConfigured } from '../../lib/supabase';
 import { GlobalSearchModal } from './GlobalSearchModal';
 
 interface AppLayoutProps {
@@ -44,7 +47,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [quickMenuOpen, setQuickMenuOpen] = useState(false);
-  const { adminUser, logout, settings } = useStore();
+  const { adminUser, logout, settings, syncStatus, isCloudConnected, lastSyncedAt, syncNow } = useStore();
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -201,6 +204,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
         <div className="flex items-center gap-2">
           <button
+            onClick={() => syncNow()}
+            aria-label="Sync Cloud Database"
+            title={isCloudConnected ? `Cloud Connected • Last Synced: ${lastSyncedAt || 'Just now'}` : 'Sync Database'}
+            className={`p-2 rounded-xl text-brand-champagne transition-colors flex items-center gap-1 text-xs font-bold ${
+              isCloudConnected ? 'bg-emerald-900/60 text-emerald-300' : 'bg-white/10 hover:bg-white/20'
+            }`}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncStatus === 'syncing' ? 'animate-spin text-amber-400' : isCloudConnected ? 'text-emerald-400' : 'text-brand-champagne'}`} />
+          </button>
+          <button
             onClick={() => setSearchModalOpen(true)}
             aria-label="Search"
             className="p-2 rounded-xl bg-white/10 text-brand-champagne hover:bg-white/20 transition-colors"
@@ -248,7 +261,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </div>
 
         {/* Navigation Items */}
-        <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 px-3 py-3 space-y-1.5 overflow-y-auto">
           {navItems.map(item => {
             const Icon = item.icon;
             const isActive = currentTab === item.id;
@@ -277,11 +290,26 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           <div className="flex items-center justify-between text-[11px] text-stone-300">
             <span className="flex items-center gap-1.5">
               <Database className="w-3 h-3 text-brand-gold" />
-              {isSupabaseConfigured ? 'Cloud Supabase' : 'Local Storage Engine'}
+              {isCloudConnected ? 'Cloud PostgreSQL' : syncStatus === 'syncing' ? 'Syncing...' : 'Local Storage'}
             </span>
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-brand-navy text-brand-gold border border-brand-gold/30">
-              {isSupabaseConfigured ? 'Live Cloud' : 'Self-Contained'}
-            </span>
+            <button
+              onClick={() => syncNow()}
+              title={lastSyncedAt ? `Last synced at ${lastSyncedAt}. Click to sync now.` : 'Click to sync now'}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all ${
+                isCloudConnected
+                  ? 'bg-emerald-900/80 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-800'
+                  : syncStatus === 'syncing'
+                  ? 'bg-amber-900/80 text-amber-300 border border-amber-500/40 animate-pulse'
+                  : syncStatus === 'error'
+                  ? 'bg-rose-900/80 text-rose-300 border border-rose-500/40 hover:bg-rose-800'
+                  : 'bg-brand-navy text-brand-gold border border-brand-gold/30 hover:bg-brand-navy/80'
+              }`}
+            >
+              <RefreshCw className={`w-2.5 h-2.5 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+              <span>
+                {isCloudConnected ? 'Live Cloud' : syncStatus === 'syncing' ? 'Syncing' : syncStatus === 'error' ? 'Retry Sync' : 'Self-Contained'}
+              </span>
+            </button>
           </div>
 
           <div className="flex items-center justify-between pt-2 border-t border-brand-navy/60">
@@ -381,6 +409,26 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Live Cloud Sync Pill */}
+            <button
+              onClick={() => syncNow()}
+              title={lastSyncedAt ? `Cloud PostgreSQL Synced at ${lastSyncedAt}. Click to refresh.` : 'Sync with cloud'}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+                isCloudConnected
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100 shadow-sm'
+                  : syncStatus === 'syncing'
+                  ? 'bg-amber-50 text-amber-800 border-amber-300 animate-pulse'
+                  : syncStatus === 'error'
+                  ? 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100'
+                  : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100'
+              }`}
+            >
+              <RefreshCw className={`w-3 h-3 ${syncStatus === 'syncing' ? 'animate-spin text-amber-600' : isCloudConnected ? 'text-emerald-600' : 'text-stone-500'}`} />
+              <span>
+                {isCloudConnected ? 'Cloud Synced' : syncStatus === 'syncing' ? 'Syncing...' : syncStatus === 'error' ? 'Sync Issue' : 'Local Storage'}
+              </span>
+            </button>
+
             {/* Live Date Pill */}
             <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-brand-goldLight border border-brand-gold/40 text-xs font-bold text-brand-midnight shadow-sm">
               <Calendar className="w-3.5 h-3.5 text-amber-700" />
