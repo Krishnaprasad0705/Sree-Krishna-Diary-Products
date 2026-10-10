@@ -46,6 +46,25 @@ import {
 
 export type SyncStatus = 'connected' | 'syncing' | 'offline' | 'error' | 'unconfigured';
 
+// Cryptographic hash helper for offline PIN security
+export const hashPin = async (pin: string): Promise<string> => {
+  const cleanPin = pin.trim();
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(`skdp_offline_salt_${cleanPin}`);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  // Safe synchronous fallback for testing / non-web crypto environments
+  let hash = 5381;
+  const str = `skdp_offline_salt_${cleanPin}`;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) + str.charCodeAt(i);
+  }
+  return `skdp_hash_${(hash >>> 0).toString(16)}`;
+};
+
 interface StoreContextType {
   // State
   customers: Customer[];
@@ -74,10 +93,12 @@ interface StoreContextType {
   reconnectCloud: () => Promise<void>;
 
   // Auth methods
-  login: (pinOrPass: string) => boolean;
+  login: (pinOrPass: string) => Promise<boolean>;
   loginWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signUpOwnerAccount: (email: string, password: string, fullName?: string) => Promise<{ success: boolean; error?: string }>;
-  loginWithPin: (pin: string) => boolean;
+  loginWithPin: (pin: string) => Promise<boolean>;
+  setOfflinePin: (pin: string) => Promise<boolean>;
+  hasOfflinePin: () => boolean;
   logout: () => Promise<void>;
 
   // Customer methods
@@ -305,6 +326,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // 3. Cloud Synchronization & Realtime Subscriptions
   const syncNow = useCallback(async () => {
+    // SECURITY GUARD: Never sync cloud data if not in cloud auth mode or missing Supabase user session
+    if (authMode !== 'cloud' || !supabaseUser) {
+      console.log('Skipping cloud sync: user is not in authenticated cloud mode');
+      return;
+    }
+
     const client = getSupabaseClient();
     if (!client) {
       setSyncStatus('unconfigured');
@@ -372,6 +399,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [customers, subscriptions, products, priceHistory, deliveries, sales, payments, invoices, stockItems, stockMovements, settings]);
 
   const uploadLocalToCloudAction = useCallback(async () => {
+    // SECURITY GUARD: Cloud upload requires authenticated Supabase session
+    if (authMode !== 'cloud' || !supabaseUser) {
+      return {
+        success: false,
+        count: 0,
+        error: 'Authentication required: You must be logged in as SKDP owner to upload data to cloud'
+      };
+    }
+
     // 1. Create a safe local protective backup before sending data to cloud
     try {
       const backupSnapshot = exportDataJSON();
@@ -418,6 +454,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Realtime subscription setup
   useEffect(() => {
+    // Only subscribe to realtime updates if authenticated in cloud mode
+    if (!isAuthenticated || authMode !== 'cloud' || !supabaseUser) {
+      return;
+    }
+
     const client = getSupabaseClient();
     if (!client) {
       setSyncStatus('unconfigured');
@@ -673,6 +714,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setSupabaseUser(data.user);
         setIsAuthenticated(true);
         setAuthMode('cloud');
+
+        // Claim initial owner in app_admins table via security-definer function
+        try {
+          await client.rpc('initialize_owner_account');
+        } catch (rpcErr) {
+          console.warn('RPC initialize_owner_account notice:', rpcErr);
+        }
+
         syncNow();
       }
 
@@ -682,16 +731,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const loginWithPin = (pin: string): boolean => {
-    if (pin === '1234' || pin.toLowerCase() === 'admin' || pin.length >= 4) {
+  const setOfflinePin = async (newPin: string): Promise<boolean> => {
+    if (!newPin || newPin.trim().length < 4) return false;
+    const hash = await hashPin(newPin.trim());
+    localStorage.setItem('skd_offline_owner_pin_hash', hash);
+    return true;
+  };
+
+  const hasOfflinePin = (): boolean => {
+    return Boolean(localStorage.getItem('skd_offline_owner_pin_hash'));
+  };
+
+  const loginWithPin = async (pin: string): Promise<boolean> => {
+    const storedHash = localStorage.getItem('skd_offline_owner_pin_hash');
+    if (!storedHash) {
+      // SECURITY REQUIREMENT: No fixed or default PIN (1234) allowed.
+      // Must have explicitly configured an offline owner PIN.
+      return false;
+    }
+
+    const computedHash = await hashPin(pin.trim());
+    if (computedHash === storedHash) {
       setIsAuthenticated(true);
       setAuthMode('local');
+      setSyncStatus('offline'); // Explicitly offline; no cloud exposure
       return true;
     }
     return false;
   };
 
-  const login = (pinOrPass: string): boolean => {
+  const login = async (pinOrPass: string): Promise<boolean> => {
     return loginWithPin(pinOrPass);
   };
 
@@ -707,6 +776,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSupabaseUser(null);
     setIsAuthenticated(false);
     setAuthMode('local');
+    setSyncStatus('offline');
   };
 
   // Keep adminUser synced with settings.ownerName and supabaseUser
@@ -1357,6 +1427,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         loginWithEmail,
         signUpOwnerAccount,
         loginWithPin,
+        setOfflinePin,
+        hasOfflinePin,
         logout,
         addCustomer,
         updateCustomer,

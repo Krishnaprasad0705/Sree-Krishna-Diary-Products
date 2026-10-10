@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { calculateCustomerLedger, formatCurrency, formatVolume } from '../lib/calculations';
 import { Customer, Subscription, DeliveryRecord, Sale, Payment, Invoice } from '../types';
+import { initialBusinessSettings } from '../lib/initialData';
 
 describe('Sree Krishna Dairy Products - Core Business Logic & Financial Ledger Tests', () => {
   it('Scenario 1: Exact Benchmark Test Case from Prompt (₹1800 sub + ₹120 extra = ₹1920 charges, ₹500 on 7th + ₹700 on 18th = ₹720 due; +₹800 pay = ₹80 credit)', () => {
@@ -263,5 +264,72 @@ describe('Sree Krishna Dairy Products - Core Business Logic & Financial Ledger T
     expect(parsed.customers.length).toBe(2);
     expect(parsed.sales.length).toBe(1);
     expect(parsed.customers[0].name).toBe('Krishna Prasad.M');
+  });
+
+  it('Scenario 7: Offline PIN security rejects hardcoded 1234 without owner configuration and verifies salted hash', async () => {
+    const { hashPin } = await import('../lib/store');
+
+    // 1. PIN hash must be consistent for identical PIN
+    const hash1 = await hashPin('9876');
+    const hash2 = await hashPin('9876');
+    expect(hash1).toBe(hash2);
+    expect(hash1.length).toBeGreaterThanOrEqual(10);
+
+    // 2. Different PIN produces different hash
+    const hashDifferent = await hashPin('1234');
+    expect(hash1).not.toBe(hashDifferent);
+
+    // 3. Test verification logic: unconfigured storage must reject PIN
+    const mockStorage: Record<string, string> = {};
+    const checkPin = async (inputPin: string) => {
+      const stored = mockStorage['skd_offline_owner_pin_hash'];
+      if (!stored) return false;
+      const computed = await hashPin(inputPin);
+      return computed === stored;
+    };
+
+    // Unconfigured: '1234' MUST FAIL
+    expect(await checkPin('1234')).toBe(false);
+
+    // Once owner configures their secret PIN '5821':
+    mockStorage['skd_offline_owner_pin_hash'] = await hashPin('5821');
+
+    // '1234' still fails
+    expect(await checkPin('1234')).toBe(false);
+
+    // Correct configured PIN passes
+    expect(await checkPin('5821')).toBe(true);
+  });
+
+  it('Scenario 8: Cloud sync upload strictly requires authenticated session and preserves local data on error', async () => {
+    const { uploadAllDataToCloud, fetchAllCloudData } = await import('../lib/cloudSync');
+
+    // Attempting upload with null client or unauthenticated session
+    const mockLocalData = {
+      customers: [
+        { id: 'c-1', name: 'Krishna Prasad.M', phone: '09629979363', address: '35/93A', location: 'Gandhi Rd', category: 'REGULAR' as const, status: 'ACTIVE' as const, openingBalance: 0, createdAt: '2026-10-01', updatedAt: '2026-10-01' }
+      ],
+      subscriptions: [],
+      products: [],
+      priceHistory: [],
+      deliveries: [],
+      sales: [],
+      payments: [],
+      invoices: [],
+      stockItems: [],
+      stockMovements: [],
+      settings: initialBusinessSettings
+    };
+
+    // Verify upload function handles unauthenticated state gracefully without crashing
+    const res = await uploadAllDataToCloud(mockLocalData);
+    // Since unit test runs without active Supabase session, it must reject
+    expect(res.success).toBe(false);
+    expect(res.count).toBe(0);
+    expect(res.error).toBeDefined();
+
+    // Verify that local input records were not mutated or lost
+    expect(mockLocalData.customers.length).toBe(1);
+    expect(mockLocalData.customers[0].name).toBe('Krishna Prasad.M');
   });
 });

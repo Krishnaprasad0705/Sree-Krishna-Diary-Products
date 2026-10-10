@@ -1,7 +1,7 @@
 -- ==============================================================================
 -- SREE KRISHNA DAIRY PRODUCTS - PRODUCTION CLOUD DATABASE SCHEMA
 -- Target Database: PostgreSQL 15+ / Supabase
--- Supports Multi-Device Realtime Synchronization & Offline Sync
+-- Supports Multi-Device Realtime Synchronization & Strict Owner-Only Access
 -- ==============================================================================
 
 -- 1. BUSINESS SETTINGS TABLE
@@ -64,10 +64,10 @@ CREATE TABLE IF NOT EXISTS products (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. PRICE HISTORY TABLE
+-- 4. PRICE HISTORY
 CREATE TABLE IF NOT EXISTS price_history (
     id TEXT PRIMARY KEY,
-    product_id TEXT NOT NULL,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     product_name VARCHAR(255) NOT NULL,
     old_price NUMERIC(10, 2) NOT NULL,
     new_price NUMERIC(10, 2) NOT NULL,
@@ -76,17 +76,15 @@ CREATE TABLE IF NOT EXISTS price_history (
     recorded_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_price_history_product ON price_history(product_id);
-
--- 5. SUBSCRIPTIONS TABLE
+-- 5. SUBSCRIPTIONS
 CREATE TABLE IF NOT EXISTS subscriptions (
     id TEXT PRIMARY KEY,
     customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    pricing_model VARCHAR(50) DEFAULT 'ACTUAL_DELIVERY', -- ACTUAL_DELIVERY or FIXED_RECURRING
-    expected_daily_quantity_ml INTEGER NOT NULL DEFAULT 1000, -- 1000ml = 1L
+    pricing_model VARCHAR(50) DEFAULT 'ACTUAL_DELIVERY',
+    expected_daily_quantity_ml INTEGER NOT NULL DEFAULT 1000,
     fixed_monthly_amount NUMERIC(10, 2),
-    status VARCHAR(50) DEFAULT 'ACTIVE', -- ACTIVE, PAUSED, ENDED
-    schedule VARCHAR(50) DEFAULT 'EVERYDAY', -- EVERYDAY, ALTERNATE, WEEKDAYS, CUSTOM
+    status VARCHAR(50) DEFAULT 'ACTIVE', -- ACTIVE, PAUSED, CANCELLED
+    schedule VARCHAR(50) DEFAULT 'EVERYDAY',
     start_date DATE NOT NULL,
     renewal_date DATE,
     notes TEXT,
@@ -94,99 +92,80 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(customer_id);
-
--- 6. DAILY DELIVERY RECORDS
+-- 6. DELIVERY RECORDS
 CREATE TABLE IF NOT EXISTS delivery_records (
     id TEXT PRIMARY KEY,
     date DATE NOT NULL,
     customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    customer_name VARCHAR(255),
-    quantity_ml INTEGER NOT NULL DEFAULT 0,
-    extra_quantity_ml INTEGER NOT NULL DEFAULT 0,
+    customer_name VARCHAR(255) NOT NULL,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    product_name VARCHAR(255) NOT NULL,
+    expected_quantity_ml INTEGER NOT NULL,
+    delivered_quantity_ml INTEGER NOT NULL,
+    status VARCHAR(50) DEFAULT 'DELIVERED', -- DELIVERED, SKIPPED, EXTRA_ONLY
     unit_price_per_liter NUMERIC(10, 2) NOT NULL,
     total_amount NUMERIC(10, 2) NOT NULL,
-    status VARCHAR(50) DEFAULT 'DELIVERED', -- DELIVERED, SKIPPED, MODIFIED
     notes TEXT,
-    recorded_at TIMESTAMPTZ DEFAULT NOW()
+    recorded_at TIMESTAMPTZ DEFAULT NOW(),
+    recorded_by VARCHAR(255) DEFAULT 'Radhakrishnan'
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_date_customer ON delivery_records(date, customer_id);
-CREATE INDEX IF NOT EXISTS idx_delivery_date ON delivery_records(date);
-CREATE INDEX IF NOT EXISTS idx_delivery_customer ON delivery_records(customer_id);
-
--- 7. SALES & QUICK POS
+-- 7. SALES (POS & Extra Direct Counter Sales)
 CREATE TABLE IF NOT EXISTS sales (
     id TEXT PRIMARY KEY,
     date DATE NOT NULL,
-    customer_id TEXT,
+    customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
     customer_name VARCHAR(255) NOT NULL,
-    is_walk_in BOOLEAN DEFAULT FALSE,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+    product_name VARCHAR(255) NOT NULL,
+    quantity NUMERIC(10, 2) NOT NULL,
+    unit VARCHAR(20) DEFAULT 'ml',
+    price_per_liter NUMERIC(10, 2) NOT NULL,
     total_amount NUMERIC(10, 2) NOT NULL,
-    discount NUMERIC(10, 2) DEFAULT 0.00,
-    final_amount NUMERIC(10, 2) NOT NULL,
-    amount_paid NUMERIC(10, 2) DEFAULT 0.00,
-    payment_status VARCHAR(50) DEFAULT 'PAID', -- PAID, PARTIALLY_PAID, UNPAID
-    payment_method VARCHAR(50) DEFAULT 'CASH', -- CASH, UPI, BANK_TRANSFER, OTHER
+    payment_mode VARCHAR(50) NOT NULL, -- CASH, UPI, CREDIT
     notes TEXT,
-    items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     recorded_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date);
-CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
-
--- 8. PAYMENTS TABLE
+-- 8. PAYMENTS
 CREATE TABLE IF NOT EXISTS payments (
     id TEXT PRIMARY KEY,
     date DATE NOT NULL,
     customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    customer_name VARCHAR(255),
+    customer_name VARCHAR(255) NOT NULL,
     amount NUMERIC(12, 2) NOT NULL,
-    payment_method VARCHAR(50) DEFAULT 'CASH', -- CASH, UPI, BANK_TRANSFER, OTHER
-    reference_no VARCHAR(100),
-    invoice_id TEXT,
+    payment_mode VARCHAR(50) NOT NULL, -- CASH, UPI, BANK_TRANSFER, CHEQUE
+    reference_number VARCHAR(100),
     notes TEXT,
     recorded_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments(customer_id);
-CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(date);
-
--- 9. MONTHLY INVOICES TABLE
+-- 9. INVOICES
 CREATE TABLE IF NOT EXISTS invoices (
     id TEXT PRIMARY KEY,
     invoice_number VARCHAR(100) UNIQUE NOT NULL,
     customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     customer_name VARCHAR(255) NOT NULL,
-    customer_phone VARCHAR(30),
-    customer_address TEXT,
+    customer_phone VARCHAR(30) NOT NULL,
     period_start DATE NOT NULL,
     period_end DATE NOT NULL,
-    issue_date DATE NOT NULL,
-    due_date DATE NOT NULL,
+    total_milk_liters NUMERIC(10, 2) DEFAULT 0.00,
+    milk_amount NUMERIC(12, 2) DEFAULT 0.00,
+    extra_sales_amount NUMERIC(12, 2) DEFAULT 0.00,
+    subtotal NUMERIC(12, 2) NOT NULL,
     previous_balance NUMERIC(12, 2) DEFAULT 0.00,
-    subscription_charges NUMERIC(12, 2) DEFAULT 0.00,
-    delivery_charges NUMERIC(12, 2) DEFAULT 0.00,
-    extra_milk_charges NUMERIC(12, 2) DEFAULT 0.00,
-    ghee_charges NUMERIC(12, 2) DEFAULT 0.00,
-    adjustments NUMERIC(12, 2) DEFAULT 0.00,
+    payments_received NUMERIC(12, 2) DEFAULT 0.00,
     total_payable NUMERIC(12, 2) NOT NULL,
-    payments_allocated NUMERIC(12, 2) DEFAULT 0.00,
-    remaining_due NUMERIC(12, 2) NOT NULL,
-    status VARCHAR(50) DEFAULT 'ISSUED', -- DRAFT, ISSUED, PARTIALLY_PAID, PAID, OVERDUE
+    status VARCHAR(50) DEFAULT 'UNPAID', -- PAID, UNPAID, PARTIAL, CANCELLED
+    items_json JSONB DEFAULT '[]'::jsonb,
     notes TEXT,
-    line_items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    generated_at TIMESTAMPTZ DEFAULT NOW()
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+    paid_at TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
-CREATE INDEX IF NOT EXISTS idx_invoices_period ON invoices(period_start, period_end);
-
--- 10. STOCK ITEMS & MOVEMENTS TABLE
+-- 10. STOCK MANAGEMENT
 CREATE TABLE IF NOT EXISTS stock_items (
-    id TEXT PRIMARY KEY,
-    product_id TEXT NOT NULL,
+    product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
     product_name VARCHAR(255) NOT NULL,
     current_stock_liters NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
     last_updated TIMESTAMPTZ DEFAULT NOW()
@@ -194,16 +173,55 @@ CREATE TABLE IF NOT EXISTS stock_items (
 
 CREATE TABLE IF NOT EXISTS stock_movements (
     id TEXT PRIMARY KEY,
-    product_id TEXT NOT NULL,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     product_name VARCHAR(255) NOT NULL,
     date DATE NOT NULL,
-    type VARCHAR(50) NOT NULL, -- OPENING, PROCUREMENT, SALES_DEDUCTION, DELIVERY_DEDUCTION, ADJUSTMENT
+    type VARCHAR(50) NOT NULL,
     quantity_liters NUMERIC(10, 2) NOT NULL,
     notes TEXT
 );
 
--- 11. STRICT ROW LEVEL SECURITY (RLS) POLICIES
--- All tables deny public/anonymous access and require authenticated admin sessions.
+-- 11. DEDICATED APP_ADMINS TABLE (Tracks authorized SKDP owners only)
+CREATE TABLE IF NOT EXISTS app_admins (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role VARCHAR(50) DEFAULT 'OWNER',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 12. SECURITY DEFINER AUTHORIZATION FUNCTIONS
+CREATE OR REPLACE FUNCTION is_skdp_owner()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM app_admins WHERE id = auth.uid()
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION initialize_owner_account()
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  IF (SELECT COUNT(*) FROM app_admins) = 0 THEN
+    INSERT INTO app_admins (id, email, role)
+    VALUES (auth.uid(), auth.jwt() ->> 'email', 'OWNER')
+    ON CONFLICT (id) DO NOTHING;
+    RETURN TRUE;
+  ELSIF EXISTS (SELECT 1 FROM app_admins WHERE id = auth.uid()) THEN
+    RETURN TRUE;
+  ELSE
+    RAISE EXCEPTION 'SKDP Owner already registered. Public registration is closed.';
+  END IF;
+END;
+$$;
+
+-- 13. STRICT ROW LEVEL SECURITY (RLS) POLICIES
+ALTER TABLE app_admins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE business_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
@@ -216,48 +234,37 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_movements ENABLE ROW LEVEL SECURITY;
 
--- Drop any previous permissive policies
+-- Clean up any prior policies
 DO $$
+DECLARE
+    r RECORD;
 BEGIN
-    DROP POLICY IF EXISTS "Full access to business_settings" ON business_settings;
-    DROP POLICY IF EXISTS "Full access to customers" ON customers;
-    DROP POLICY IF EXISTS "Full access to products" ON products;
-    DROP POLICY IF EXISTS "Full access to price_history" ON price_history;
-    DROP POLICY IF EXISTS "Full access to subscriptions" ON subscriptions;
-    DROP POLICY IF EXISTS "Full access to delivery_records" ON delivery_records;
-    DROP POLICY IF EXISTS "Full access to sales" ON sales;
-    DROP POLICY IF EXISTS "Full access to payments" ON payments;
-    DROP POLICY IF EXISTS "Full access to invoices" ON invoices;
-    DROP POLICY IF EXISTS "Full access to stock_items" ON stock_items;
-    DROP POLICY IF EXISTS "Full access to stock_movements" ON stock_movements;
-    
-    DROP POLICY IF EXISTS "Authenticated admins only for business_settings" ON business_settings;
-    DROP POLICY IF EXISTS "Authenticated admins only for customers" ON customers;
-    DROP POLICY IF EXISTS "Authenticated admins only for products" ON products;
-    DROP POLICY IF EXISTS "Authenticated admins only for price_history" ON price_history;
-    DROP POLICY IF EXISTS "Authenticated admins only for subscriptions" ON subscriptions;
-    DROP POLICY IF EXISTS "Authenticated admins only for delivery_records" ON delivery_records;
-    DROP POLICY IF EXISTS "Authenticated admins only for sales" ON sales;
-    DROP POLICY IF EXISTS "Authenticated admins only for payments" ON payments;
-    DROP POLICY IF EXISTS "Authenticated admins only for invoices" ON invoices;
-    DROP POLICY IF EXISTS "Authenticated admins only for stock_items" ON stock_items;
-    DROP POLICY IF EXISTS "Authenticated admins only for stock_movements" ON stock_movements;
+    FOR r IN (
+        SELECT schemaname, tablename, policyname
+        FROM pg_policies
+        WHERE schemaname = 'public'
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
 END $$;
 
--- Enforce strictly authenticated admin access (anon role is completely blocked)
-CREATE POLICY "Authenticated admins only for business_settings" ON business_settings FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for customers" ON customers FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for products" ON products FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for price_history" ON price_history FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for subscriptions" ON subscriptions FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for delivery_records" ON delivery_records FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for sales" ON sales FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for payments" ON payments FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for invoices" ON invoices FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for stock_items" ON stock_items FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for stock_movements" ON stock_movements FOR ALL TO authenticated USING (auth.role() = 'authenticated');
+-- Enforce strict owner-only policies
+CREATE POLICY "owner_read_admin_self" ON app_admins FOR SELECT TO authenticated USING (id = auth.uid());
 
--- 12. FULL REPLICA IDENTITY (Required for Supabase Realtime UPDATE & DELETE payloads)
+CREATE POLICY "owner_only_business_settings" ON business_settings FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_customers" ON customers FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_products" ON products FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_price_history" ON price_history FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_subscriptions" ON subscriptions FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_delivery_records" ON delivery_records FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_sales" ON sales FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_payments" ON payments FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_invoices" ON invoices FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_stock_items" ON stock_items FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_stock_movements" ON stock_movements FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+
+-- 14. FULL REPLICA IDENTITY (Required for Supabase Realtime UPDATE & DELETE payloads)
+ALTER TABLE app_admins REPLICA IDENTITY FULL;
 ALTER TABLE business_settings REPLICA IDENTITY FULL;
 ALTER TABLE customers REPLICA IDENTITY FULL;
 ALTER TABLE products REPLICA IDENTITY FULL;
@@ -270,7 +277,7 @@ ALTER TABLE invoices REPLICA IDENTITY FULL;
 ALTER TABLE stock_items REPLICA IDENTITY FULL;
 ALTER TABLE stock_movements REPLICA IDENTITY FULL;
 
--- 13. ENABLE REALTIME PUBLICATION ON ALL TABLES
+-- 15. ENABLE REALTIME PUBLICATION ON ALL TABLES
 DO $$
 BEGIN
     BEGIN

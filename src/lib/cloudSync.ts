@@ -12,6 +12,7 @@ import {
   StockMovement
 } from '../types';
 import { getSupabaseClient } from './supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ============================================================================
 // DATA TRANSFORMERS (TypeScript camelCase <-> PostgreSQL snake_case)
@@ -364,6 +365,13 @@ export const fetchAllCloudData = async (): Promise<CloudFetchResult | null> => {
   if (!client) return null;
 
   try {
+    // Security check: Must have an active authenticated Supabase session
+    const { data: { session } } = await client.auth.getSession();
+    if (!session?.user) {
+      console.log('fetchAllCloudData: Skipped (no active authenticated Supabase session)');
+      return null;
+    }
+
     const [
       customersRes,
       subscriptionsRes,
@@ -452,79 +460,100 @@ export const uploadAllDataToCloud = async (localData: {
   }
 
   try {
+    // Security check: Must have an active authenticated Supabase session
+    const { data: { session } } = await client.auth.getSession();
+    if (!session?.user) {
+      return {
+        success: false,
+        count: 0,
+        error: 'Authentication required: You must be logged in as SKDP owner to upload data to cloud'
+      };
+    }
+
     let totalSynced = 0;
 
     // 1. Settings
     if (localData.settings) {
-      await client.from('business_settings').upsert(transformSettingsToDb(localData.settings));
+      const { error: err } = await client.from('business_settings').upsert(transformSettingsToDb(localData.settings));
+      if (err) throw new Error(`Settings sync error: ${err.message}`);
       totalSynced++;
     }
 
     // 2. Customers
     if (localData.customers.length > 0) {
       const dbCusts = localData.customers.map(transformCustomerToDb);
-      await client.from('customers').upsert(dbCusts);
+      const { error: err } = await client.from('customers').upsert(dbCusts);
+      if (err) throw new Error(`Customers sync error: ${err.message}`);
       totalSynced += dbCusts.length;
     }
 
     // 3. Products
     if (localData.products.length > 0) {
       const dbProds = localData.products.map(transformProductToDb);
-      await client.from('products').upsert(dbProds);
+      const { error: err } = await client.from('products').upsert(dbProds);
+      if (err) throw new Error(`Products sync error: ${err.message}`);
       totalSynced += dbProds.length;
     }
 
     // 4. Price History
     if (localData.priceHistory.length > 0) {
       const dbPriceHist = localData.priceHistory.map(transformPriceHistoryToDb);
-      await client.from('price_history').upsert(dbPriceHist);
+      const { error: err } = await client.from('price_history').upsert(dbPriceHist);
+      if (err) throw new Error(`Price history sync error: ${err.message}`);
       totalSynced += dbPriceHist.length;
     }
 
     // 5. Subscriptions
     if (localData.subscriptions.length > 0) {
       const dbSubs = localData.subscriptions.map(transformSubscriptionToDb);
-      await client.from('subscriptions').upsert(dbSubs);
+      const { error: err } = await client.from('subscriptions').upsert(dbSubs);
+      if (err) throw new Error(`Subscriptions sync error: ${err.message}`);
       totalSynced += dbSubs.length;
     }
 
     // 6. Deliveries
     if (localData.deliveries.length > 0) {
       const dbDels = localData.deliveries.map(transformDeliveryToDb);
-      await client.from('delivery_records').upsert(dbDels);
+      const { error: err } = await client.from('delivery_records').upsert(dbDels);
+      if (err) throw new Error(`Deliveries sync error: ${err.message}`);
       totalSynced += dbDels.length;
     }
 
     // 7. Sales
     if (localData.sales.length > 0) {
       const dbSales = localData.sales.map(transformSaleToDb);
-      await client.from('sales').upsert(dbSales);
+      const { error: err } = await client.from('sales').upsert(dbSales);
+      if (err) throw new Error(`Sales sync error: ${err.message}`);
       totalSynced += dbSales.length;
     }
 
     // 8. Payments
     if (localData.payments.length > 0) {
       const dbPays = localData.payments.map(transformPaymentToDb);
-      await client.from('payments').upsert(dbPays);
+      const { error: err } = await client.from('payments').upsert(dbPays);
+      if (err) throw new Error(`Payments sync error: ${err.message}`);
       totalSynced += dbPays.length;
     }
 
     // 9. Invoices
     if (localData.invoices.length > 0) {
       const dbInvs = localData.invoices.map(transformInvoiceToDb);
-      await client.from('invoices').upsert(dbInvs);
+      const { error: err } = await client.from('invoices').upsert(dbInvs);
+      if (err) throw new Error(`Invoices sync error: ${err.message}`);
       totalSynced += dbInvs.length;
     }
 
     // 10. Stock Items & Movements
     if (localData.stockItems.length > 0) {
       const dbStock = localData.stockItems.map(transformStockItemToDb);
-      await client.from('stock_items').upsert(dbStock);
+      const { error: err } = await client.from('stock_items').upsert(dbStock);
+      if (err) throw new Error(`Stock items sync error: ${err.message}`);
       totalSynced += dbStock.length;
     }
     if (localData.stockMovements.length > 0) {
       const dbMoves = localData.stockMovements.map(transformStockMovementToDb);
-      await client.from('stock_movements').upsert(dbMoves);
+      const { error: err } = await client.from('stock_movements').upsert(dbMoves);
+      if (err) throw new Error(`Stock movements sync error: ${err.message}`);
       totalSynced += dbMoves.length;
     }
 
@@ -535,13 +564,22 @@ export const uploadAllDataToCloud = async (localData: {
   }
 };
 
-// ============================================================================
-// GRANULAR MUTATIONS TO SUPABASE (Fire & Forget with Error Log)
-// ============================================================================
+// Helper to verify authenticated session before any cloud operation
+export const getAuthenticatedClient = async (): Promise<SupabaseClient | null> => {
+  const client = getSupabaseClient();
+  if (!client) return null;
+  try {
+    const { data: { session } } = await client.auth.getSession();
+    if (!session?.user) return null;
+    return client;
+  } catch {
+    return null;
+  }
+};
 
 export const cloudSync = {
   upsertCustomer: async (c: Customer) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('customers').upsert(transformCustomerToDb(c));
@@ -550,7 +588,7 @@ export const cloudSync = {
     }
   },
   deleteCustomer: async (customerId: string) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('customers').delete().eq('id', customerId);
@@ -559,7 +597,7 @@ export const cloudSync = {
     }
   },
   upsertSubscription: async (s: Subscription) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('subscriptions').upsert(transformSubscriptionToDb(s));
@@ -568,7 +606,7 @@ export const cloudSync = {
     }
   },
   deleteSubscription: async (subscriptionId: string) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('subscriptions').delete().eq('id', subscriptionId);
@@ -577,7 +615,7 @@ export const cloudSync = {
     }
   },
   upsertDelivery: async (d: DeliveryRecord) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('delivery_records').upsert(transformDeliveryToDb(d));
@@ -586,7 +624,7 @@ export const cloudSync = {
     }
   },
   upsertBulkDeliveries: async (dels: DeliveryRecord[]) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client || dels.length === 0) return;
     try {
       await client.from('delivery_records').upsert(dels.map(transformDeliveryToDb));
@@ -595,7 +633,7 @@ export const cloudSync = {
     }
   },
   deleteDelivery: async (deliveryId: string) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('delivery_records').delete().eq('id', deliveryId);
@@ -604,7 +642,7 @@ export const cloudSync = {
     }
   },
   upsertSale: async (s: Sale) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('sales').upsert(transformSaleToDb(s));
@@ -613,7 +651,7 @@ export const cloudSync = {
     }
   },
   deleteSale: async (saleId: string) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('sales').delete().eq('id', saleId);
@@ -622,7 +660,7 @@ export const cloudSync = {
     }
   },
   upsertPayment: async (p: Payment) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('payments').upsert(transformPaymentToDb(p));
@@ -631,7 +669,7 @@ export const cloudSync = {
     }
   },
   deletePayment: async (paymentId: string) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('payments').delete().eq('id', paymentId);
@@ -640,7 +678,7 @@ export const cloudSync = {
     }
   },
   upsertInvoice: async (inv: Invoice) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('invoices').upsert(transformInvoiceToDb(inv));
@@ -649,7 +687,7 @@ export const cloudSync = {
     }
   },
   deleteInvoice: async (invoiceId: string) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('invoices').delete().eq('id', invoiceId);
@@ -658,7 +696,7 @@ export const cloudSync = {
     }
   },
   upsertProduct: async (p: Product) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('products').upsert(transformProductToDb(p));
@@ -667,7 +705,7 @@ export const cloudSync = {
     }
   },
   upsertPriceHistory: async (ph: PriceHistory) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('price_history').upsert(transformPriceHistoryToDb(ph));
@@ -676,7 +714,7 @@ export const cloudSync = {
     }
   },
   upsertStockItem: async (item: StockItem) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('stock_items').upsert(transformStockItemToDb(item));
@@ -685,7 +723,7 @@ export const cloudSync = {
     }
   },
   upsertStockMovement: async (m: StockMovement) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('stock_movements').upsert(transformStockMovementToDb(m));
@@ -694,7 +732,7 @@ export const cloudSync = {
     }
   },
   upsertSettings: async (s: BusinessSettings) => {
-    const client = getSupabaseClient();
+    const client = await getAuthenticatedClient();
     if (!client) return;
     try {
       await client.from('business_settings').upsert(transformSettingsToDb(s));

@@ -51,13 +51,18 @@ export const SettingsView: React.FC = () => {
     deliveries,
     sales,
     payments,
-    invoices
+    invoices,
+    setOfflinePin,
+    hasOfflinePin,
+    authMode,
+    supabaseUser
   } = useStore();
   const { showToast } = useToast();
 
   const [formData, setFormData] = useState<BusinessSettings>({ ...settings });
   const [jsonInput, setJsonInput] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [offlinePinInput, setOfflinePinInput] = useState('');
 
   // Cloud Config State
   const initialConfig = getSupabaseConfig();
@@ -92,6 +97,37 @@ export const SettingsView: React.FC = () => {
     a.click();
     URL.revokeObjectURL(url);
     showToast('Downloaded full business backup JSON');
+  };
+
+  const handleDownloadPreMigrationBackup = () => {
+    const raw = localStorage.getItem('skd_backup_pre_migration_v1');
+    if (!raw) {
+      showToast('No pre-migration snapshot found in browser storage', 'info');
+      return;
+    }
+    const blob = new Blob([raw], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SKDP_PreMigration_Backup_${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Downloaded pre-migration snapshot backup');
+  };
+
+  const handleUpdateOfflinePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!offlinePinInput.trim() || offlinePinInput.trim().length < 4) {
+      showToast('Offline PIN must be at least 4 digits', 'error');
+      return;
+    }
+    const ok = await setOfflinePin(offlinePinInput.trim());
+    if (ok) {
+      showToast('Offline Security PIN saved successfully!');
+      setOfflinePinInput('');
+    } else {
+      showToast('Failed to save offline PIN', 'error');
+    }
   };
 
   const handleImportSubmit = () => {
@@ -334,7 +370,47 @@ CREATE TABLE IF NOT EXISTS stock_movements (
     notes TEXT
 );
 
--- RLS
+-- 11. DEDICATED APP_ADMINS TABLE (Tracks authorized SKDP owners only)
+CREATE TABLE IF NOT EXISTS app_admins (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role VARCHAR(50) DEFAULT 'OWNER',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 12. SECURITY DEFINER AUTHORIZATION FUNCTIONS
+CREATE OR REPLACE FUNCTION is_skdp_owner()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM app_admins WHERE id = auth.uid()
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION initialize_owner_account()
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  IF (SELECT COUNT(*) FROM app_admins) = 0 THEN
+    INSERT INTO app_admins (id, email, role)
+    VALUES (auth.uid(), auth.jwt() ->> 'email', 'OWNER')
+    ON CONFLICT (id) DO NOTHING;
+    RETURN TRUE;
+  ELSIF EXISTS (SELECT 1 FROM app_admins WHERE id = auth.uid()) THEN
+    RETURN TRUE;
+  ELSE
+    RAISE EXCEPTION 'SKDP Owner already registered. Public registration is closed.';
+  END IF;
+END;
+$$;
+
+-- 13. STRICT ROW LEVEL SECURITY (RLS) POLICIES
+ALTER TABLE app_admins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE business_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
@@ -347,18 +423,37 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_movements ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Authenticated admins only for business_settings" ON business_settings FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for customers" ON customers FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for products" ON products FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for price_history" ON price_history FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for subscriptions" ON subscriptions FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for delivery_records" ON delivery_records FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for sales" ON sales FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for payments" ON payments FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for invoices" ON invoices FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for stock_items" ON stock_items FOR ALL TO authenticated USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
-CREATE POLICY "Authenticated admins only for stock_movements" ON stock_movements FOR ALL TO authenticated USING (auth.role() = 'authenticated');
+-- Clean up any prior policies
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (
+        SELECT schemaname, tablename, policyname
+        FROM pg_policies
+        WHERE schemaname = 'public'
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
+END $$;
 
+-- Enforce strict owner-only policies
+CREATE POLICY "owner_read_admin_self" ON app_admins FOR SELECT TO authenticated USING (id = auth.uid());
+
+CREATE POLICY "owner_only_business_settings" ON business_settings FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_customers" ON customers FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_products" ON products FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_price_history" ON price_history FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_subscriptions" ON subscriptions FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_delivery_records" ON delivery_records FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_sales" ON sales FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_payments" ON payments FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_invoices" ON invoices FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_stock_items" ON stock_items FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+CREATE POLICY "owner_only_stock_movements" ON stock_movements FOR ALL TO authenticated USING (is_skdp_owner()) WITH CHECK (is_skdp_owner());
+
+-- 14. FULL REPLICA IDENTITY (Required for Supabase Realtime UPDATE & DELETE payloads)
+ALTER TABLE app_admins REPLICA IDENTITY FULL;
 ALTER TABLE business_settings REPLICA IDENTITY FULL;
 ALTER TABLE customers REPLICA IDENTITY FULL;
 ALTER TABLE products REPLICA IDENTITY FULL;
@@ -371,6 +466,7 @@ ALTER TABLE invoices REPLICA IDENTITY FULL;
 ALTER TABLE stock_items REPLICA IDENTITY FULL;
 ALTER TABLE stock_movements REPLICA IDENTITY FULL;
 
+-- 15. ENABLE REALTIME PUBLICATION ON ALL TABLES
 DO $$
 BEGIN
     BEGIN
@@ -383,7 +479,7 @@ END $$;`;
 
     navigator.clipboard.writeText(sqlSchema);
     setHasCopiedSql(true);
-    showToast('SQL Schema copied to clipboard! Paste it into Supabase SQL Editor.');
+    showToast('Strict Owner-Only SQL Schema copied! Paste into Supabase SQL Editor and click RUN.');
     setTimeout(() => setHasCopiedSql(false), 3000);
   };
 
@@ -783,6 +879,57 @@ END $$;`;
                 </ol>
               </div>
             )}
+          </div>
+
+          {/* Offline PIN & Local Security */}
+          <div className="bg-white rounded-3xl p-6 shadow-card border border-stone-200/80 space-y-4">
+            <div className="flex items-center gap-2">
+              <Lock className="w-5 h-5 text-brand-navy" />
+              <h3 className="font-serif text-lg font-bold text-brand-midnight">Owner Offline Security PIN</h3>
+            </div>
+            <p className="text-xs text-stone-500 leading-relaxed">
+              Configure a personal offline PIN to unlock the dashboard on this device without internet. Unlike cloud login, offline mode never reads or writes to Supabase.
+            </p>
+
+            <form onSubmit={handleUpdateOfflinePin} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 mb-1">
+                  {hasOfflinePin && hasOfflinePin() ? 'Change Offline PIN' : 'Set New Offline PIN'}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={offlinePinInput}
+                    onChange={e => setOfflinePinInput(e.target.value)}
+                    placeholder="Enter 4-digit or longer PIN"
+                    className="flex-1 px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl text-xs font-mono outline-none focus:ring-2 focus:ring-brand-navy/30"
+                  />
+                  <Button type="submit" variant="primary" size="sm" className="font-bold">
+                    Save PIN
+                  </Button>
+                </div>
+              </div>
+              <p className="text-[10px] text-stone-400">
+                Status: {hasOfflinePin && hasOfflinePin() ? '✓ Configured on this device' : '⚠️ Not configured yet'}
+              </p>
+            </form>
+
+            <div className="pt-3 border-t border-stone-100 flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-stone-700">Pre-Migration Snapshot:</span>
+                <button
+                  type="button"
+                  onClick={handleDownloadPreMigrationBackup}
+                  className="text-xs font-bold text-brand-navy hover:underline flex items-center gap-1"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Snapshot</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-stone-400">
+                Created automatically in local storage before any cloud upload as a zero-data-loss safety guarantee.
+              </p>
+            </div>
           </div>
 
           {/* Backup & JSON Export/Import */}

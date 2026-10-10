@@ -22,11 +22,11 @@ import { useStore } from '../../lib/store';
 import { isSupabaseConfigured, saveSupabaseCredentials, getSupabaseConfig } from '../../lib/supabase';
 
 interface LoginScreenProps {
-  onLogin?: (pinOrPass: string) => boolean;
+  onLogin?: (pinOrPass: string) => boolean | Promise<boolean>;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
-  const { loginWithEmail, signUpOwnerAccount, loginWithPin, syncStatus } = useStore();
+  const { loginWithEmail, signUpOwnerAccount, loginWithPin, hasOfflinePin, syncStatus } = useStore();
 
   const isCloudDbConfigured = isSupabaseConfigured();
   const [activeTab, setActiveTab] = useState<'email' | 'pin' | 'setup'>(
@@ -109,41 +109,33 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     }
   };
 
-  const handlePinLogin = (e: React.FormEvent) => {
+  const handlePinLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pin) {
-      setError('Please enter your 4-digit security PIN');
+      setError('Please enter your offline security PIN');
+      return;
+    }
+
+    if (hasOfflinePin && !hasOfflinePin()) {
+      setError('No offline security PIN is configured on this device. Please sign in with your Supabase Owner Email and Password first, then configure an offline PIN in Settings.');
       return;
     }
 
     setIsLoading(true);
     setError('');
 
-    setTimeout(() => {
-      let success = false;
-      if (loginWithPin) {
-        success = loginWithPin(pin);
-      } else if (onLogin) {
-        success = onLogin(pin);
-      }
+    let success = false;
+    if (loginWithPin) {
+      success = await loginWithPin(pin);
+    } else if (onLogin) {
+      success = await onLogin(pin);
+    }
 
-      if (!success) {
-        setError('Incorrect PIN. (Default owner PIN is: 1234)');
-        setIsLoading(false);
-      }
-    }, 300);
-  };
+    setIsLoading(false);
 
-  const handleQuickDemoPin = () => {
-    setPin('1234');
-    setIsLoading(true);
-    setTimeout(() => {
-      if (loginWithPin) {
-        loginWithPin('1234');
-      } else if (onLogin) {
-        onLogin('1234');
-      }
-    }, 200);
+    if (!success) {
+      setError('Incorrect offline security PIN. Access denied.');
+    }
   };
 
   return (
@@ -423,9 +415,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           {/* Tab 3: Security PIN (Offline / Fallback Access) */}
           {activeTab === 'pin' && (
             <form onSubmit={handlePinLogin} className="space-y-4">
+              {hasOfflinePin && !hasOfflinePin() && (
+                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-200 text-xs text-amber-900 leading-relaxed">
+                  <strong>No Offline PIN Configured:</strong> Sign in with your Supabase Owner Account first, then set a personal offline passcode in Settings to enable offline device access.
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-brand-midnight mb-1.5">
-                  Owner Security PIN
+                  Owner Offline PIN
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-stone-400">
@@ -438,7 +436,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                       setPin(e.target.value);
                       setError('');
                     }}
-                    placeholder="Enter 4-digit PIN (e.g. 1234)"
+                    placeholder="Enter owner offline PIN"
                     className="w-full pl-10 pr-4 py-3 bg-brand-ivory border border-stone-200 rounded-2xl text-brand-midnight font-bold tracking-widest text-center text-lg focus:outline-none focus:ring-2 focus:ring-brand-navy/30 focus:border-brand-navy transition-all"
                     autoFocus
                   />
@@ -452,26 +450,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 className="w-full font-bold shadow-card"
                 loading={isLoading}
               >
-                <span>Unlock Local Dashboard</span>
+                <span>Unlock Offline Dashboard</span>
                 <ArrowRight className="w-4 h-4 ml-2 text-brand-gold" />
               </Button>
 
-              <div className="relative flex py-1 items-center">
-                <div className="flex-grow border-t border-stone-200"></div>
-                <span className="flex-shrink mx-3 text-[10px] uppercase font-bold text-stone-400">Quick Login</span>
-                <div className="flex-grow border-t border-stone-200"></div>
-              </div>
-
-              <Button
-                type="button"
-                variant="secondary"
-                size="md"
-                onClick={handleQuickDemoPin}
-                className="w-full border border-brand-gold/60 text-brand-midnight text-xs"
-              >
-                <Sparkles className="w-3.5 h-3.5 mr-1.5 text-amber-600" />
-                <span>One-Click Owner Demo PIN (1234)</span>
-              </Button>
+              <p className="text-[11px] text-center text-stone-500 leading-relaxed pt-1">
+                Offline access operates strictly on local browser storage and never exposes or writes to cloud database without active authentication.
+              </p>
             </form>
           )}
 
