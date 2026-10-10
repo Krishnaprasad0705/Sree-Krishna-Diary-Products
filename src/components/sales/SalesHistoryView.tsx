@@ -26,29 +26,36 @@ export const SalesHistoryView: React.FC = () => {
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
 
   const filteredSales = useMemo(() => {
-    return sales
+    return (sales || [])
       .filter(s => {
+        if (!s) return false;
+        const q = searchQuery.toLowerCase().trim();
+        if (!q) return true;
         const matchesSearch =
-          s.customerName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          s.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          s.paymentMethod.toLowerCase().includes(searchQuery.toLowerCase());
+          (s.customerName || '').toLowerCase().includes(q) ||
+          (s.id || '').toLowerCase().includes(q) ||
+          (s.paymentMethod || '').toLowerCase().includes(q);
         return matchesSearch;
       })
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort((a, b) => {
+        const cmp = (b.date || '').localeCompare(a.date || '');
+        if (cmp !== 0) return cmp;
+        return (b.recordedAt || '').localeCompare(a.recordedAt || '');
+      });
   }, [sales, searchQuery]);
 
   const handleExportCSV = () => {
     const headers = ['Sale ID', 'Date', 'Customer Name', 'Items', 'Total Amount', 'Discount', 'Final Paid', 'Payment Method', 'Status'];
     const rows = filteredSales.map(s => [
-      s.id,
-      s.date,
-      s.customerName,
-      s.items.map(i => `${i.productName} (x${i.quantityMl}ml)`).join('; '),
-      s.totalAmount,
-      s.discount,
-      s.finalAmount,
-      s.paymentMethod,
-      s.paymentStatus
+      s.id || '',
+      s.date || '',
+      `"${(s.customerName || '').replace(/"/g, '""')}"`,
+      `"${(Array.isArray(s.items) ? s.items : []).map(i => `${i.productName || 'Item'} (x${i.quantityMl || 0}ml)`).join('; ').replace(/"/g, '""')}"`,
+      s.totalAmount || 0,
+      s.discount || 0,
+      s.finalAmount || 0,
+      s.paymentMethod || 'CASH',
+      s.paymentStatus || 'PAID'
     ]);
 
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');

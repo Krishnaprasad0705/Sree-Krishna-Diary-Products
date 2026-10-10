@@ -55,7 +55,13 @@ export const ReportsView: React.FC = () => {
   const totalOutstanding = customerAging.filter(c => c.balance > 0).reduce((sum, c) => sum + c.balance, 0);
   const totalAdvances = customerAging.filter(c => c.balance < 0).reduce((sum, c) => sum + Math.abs(c.balance), 0);
   const totalDeliveriesLiters = deliveries.reduce((sum, d) => sum + d.quantityMl + d.extraQuantityMl, 0) / 1000;
-  const totalCollections = payments.reduce((sum, p) => sum + p.amount, 0);
+  const totalCollections = (payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0) +
+    (sales || []).reduce((sum, s) => {
+      const paid = Number(s.amountPaid);
+      if (!isNaN(paid) && paid > 0) return sum + paid;
+      if (s.paymentStatus === 'PAID') return sum + (Number(s.finalAmount) || 0);
+      return sum;
+    }, 0);
 
   const handleExportSummaryCSV = () => {
     const headers = ['Customer Name', 'Category', 'Phone', 'Location', 'Delivered Milk (L)', 'Total Payments (Rs)', 'Current Balance (Rs)', 'Status'];

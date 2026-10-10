@@ -20,7 +20,7 @@ import { Badge } from '../common/Badge';
 import { Modal } from '../common/Modal';
 import { Logo } from '../brand/Logo';
 import { useToast } from '../common/Toast';
-import { formatCurrency } from '../../lib/calculations';
+import { formatCurrency, getLocalDateString } from '../../lib/calculations';
 
 interface PaymentsViewProps {
   initialCustomerId?: string;
@@ -29,6 +29,7 @@ interface PaymentsViewProps {
 export const PaymentsView: React.FC<PaymentsViewProps> = ({ initialCustomerId }) => {
   const {
     payments,
+    sales,
     customers,
     invoices,
     recordPayment,
@@ -45,7 +46,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({ initialCustomerId })
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(initialCustomerId || '');
   const [amount, setAmount] = useState<number>(500);
-  const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState<string>(getLocalDateString());
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('UPI');
   const [referenceNo, setReferenceNo] = useState<string>('');
   const [allocatedInvoiceId, setAllocatedInvoiceId] = useState<string>('');
@@ -110,7 +111,14 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({ initialCustomerId })
     setReceiptPayment(created);
   };
 
-  const totalCollected = payments.reduce((sum, p) => sum + p.amount, 0);
+  const directCollected = (payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  const posCollected = (sales || []).reduce((sum, s) => {
+    const paid = Number(s.amountPaid);
+    if (!isNaN(paid) && paid > 0) return sum + paid;
+    if (s.paymentStatus === 'PAID') return sum + (Number(s.finalAmount) || 0);
+    return sum;
+  }, 0);
+  const totalCollected = directCollected + posCollected;
 
   return (
     <div className="space-y-6 animate-fade-in">

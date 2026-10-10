@@ -79,6 +79,114 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         }}
       />
 
+      {/* Mobile Quick Action Action Sheet / Modal */}
+      {quickMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="fixed inset-0 bg-brand-midnight/70 backdrop-blur-sm transition-opacity"
+            onClick={() => setQuickMenuOpen(false)}
+          />
+          <div className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-brand-gold/40 overflow-hidden z-10 animate-scale-in">
+            <div className="flex items-center justify-between px-5 py-4 bg-brand-midnight text-white border-b border-brand-gold/30">
+              <div className="flex items-center gap-2">
+                <span className="p-1 rounded-lg bg-brand-gold text-brand-midnight">
+                  <Plus className="w-4 h-4 font-bold" />
+                </span>
+                <h3 className="font-serif text-base font-bold text-white">Quick Actions</h3>
+              </div>
+              <button
+                onClick={() => setQuickMenuOpen(false)}
+                className="p-1.5 rounded-lg text-brand-champagne hover:bg-white/10"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 space-y-1.5">
+              <button
+                onClick={() => {
+                  onQuickAction('add_customer');
+                  setQuickMenuOpen(false);
+                }}
+                className="w-full px-4 py-3 rounded-2xl text-left text-xs font-bold text-stone-800 hover:bg-brand-goldLight flex items-center gap-3 transition-colors group"
+              >
+                <span className="p-2 rounded-xl bg-brand-navy/10 text-brand-navy group-hover:bg-brand-navy group-hover:text-white transition-colors">
+                  <Users className="w-4 h-4" />
+                </span>
+                <div>
+                  <p className="font-bold text-stone-900">Add New Customer</p>
+                  <p className="text-[11px] font-normal text-stone-500">Register new subscriber or walk-in</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  onQuickAction('record_delivery');
+                  setQuickMenuOpen(false);
+                }}
+                className="w-full px-4 py-3 rounded-2xl text-left text-xs font-bold text-stone-800 hover:bg-brand-goldLight flex items-center gap-3 transition-colors group"
+              >
+                <span className="p-2 rounded-xl bg-brand-navy/10 text-brand-navy group-hover:bg-brand-navy group-hover:text-white transition-colors">
+                  <Truck className="w-4 h-4" />
+                </span>
+                <div>
+                  <p className="font-bold text-stone-900">Record Daily Delivery</p>
+                  <p className="text-[11px] font-normal text-stone-500">Log morning/evening milk dispatch</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  onQuickAction('quick_sale');
+                  setQuickMenuOpen(false);
+                }}
+                className="w-full px-4 py-3 rounded-2xl text-left text-xs font-bold text-stone-800 hover:bg-brand-goldLight flex items-center gap-3 transition-colors group"
+              >
+                <span className="p-2 rounded-xl bg-amber-100 text-amber-800 group-hover:bg-amber-600 group-hover:text-white transition-colors">
+                  <ShoppingCart className="w-4 h-4" />
+                </span>
+                <div>
+                  <p className="font-bold text-stone-900">Walk-in / Quick Sale</p>
+                  <p className="text-[11px] font-normal text-stone-500">Counter POS for milk and ghee</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  onQuickAction('record_payment');
+                  setQuickMenuOpen(false);
+                }}
+                className="w-full px-4 py-3 rounded-2xl text-left text-xs font-bold text-stone-800 hover:bg-brand-goldLight flex items-center gap-3 transition-colors group"
+              >
+                <span className="p-2 rounded-xl bg-amber-100 text-amber-800 group-hover:bg-amber-600 group-hover:text-white transition-colors">
+                  <CreditCard className="w-4 h-4" />
+                </span>
+                <div>
+                  <p className="font-bold text-stone-900">Record Flexible Payment</p>
+                  <p className="text-[11px] font-normal text-stone-500">Cash, UPI & bank settlements</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  onQuickAction('generate_bill');
+                  setQuickMenuOpen(false);
+                }}
+                className="w-full px-4 py-3 rounded-2xl text-left text-xs font-bold text-stone-800 hover:bg-brand-goldLight flex items-center gap-3 transition-colors group"
+              >
+                <span className="p-2 rounded-xl bg-brand-navy/10 text-brand-navy group-hover:bg-brand-navy group-hover:text-white transition-colors">
+                  <FileText className="w-4 h-4" />
+                </span>
+                <div>
+                  <p className="font-bold text-stone-900">Generate Monthly Bill</p>
+                  <p className="text-[11px] font-normal text-stone-500">Create invoice statement</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mobile Top Header */}
       <header className="md:hidden sticky top-0 z-30 flex items-center justify-between px-4 py-3 bg-brand-midnight text-white shadow-card border-b border-brand-gold/30 no-print">
         <div className="flex items-center gap-3">
@@ -94,12 +202,21 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={() => setSearchModalOpen(true)}
+            aria-label="Search"
             className="p-2 rounded-xl bg-white/10 text-brand-champagne hover:bg-white/20 transition-colors"
           >
             <Search className="w-4 h-4" />
           </button>
           <button
-            onClick={() => setQuickMenuOpen(!quickMenuOpen)}
+            onClick={() => {
+              if (currentTab === 'customers') {
+                onQuickAction('add_customer');
+              } else {
+                setQuickMenuOpen(true);
+              }
+            }}
+            title={currentTab === 'customers' ? 'Add New Customer' : 'Quick Actions'}
+            aria-label={currentTab === 'customers' ? 'Add New Customer' : 'Quick Actions'}
             className="p-2 rounded-xl bg-brand-gold text-brand-midnight hover:brightness-105 font-bold transition-transform active:scale-95 flex items-center gap-1 shadow-gold text-xs"
           >
             <Plus className="w-4 h-4" />
@@ -163,7 +280,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               {isSupabaseConfigured ? 'Cloud Supabase' : 'Local Storage Engine'}
             </span>
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-brand-navy text-brand-gold border border-brand-gold/30">
-              Live & Synced
+              {isSupabaseConfigured ? 'Live Cloud' : 'Self-Contained'}
             </span>
           </div>
 

@@ -21,7 +21,7 @@ import { Badge } from '../common/Badge';
 import { Modal } from '../common/Modal';
 import { Logo } from '../brand/Logo';
 import { useToast } from '../common/Toast';
-import { formatCurrency, formatVolume } from '../../lib/calculations';
+import { formatCurrency, formatVolume, getLocalDateString } from '../../lib/calculations';
 
 export const QuickSalePOS: React.FC = () => {
   const { products, customers, recordSale, settings } = useStore();
@@ -34,6 +34,7 @@ export const QuickSalePOS: React.FC = () => {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
   const [discount, setDiscount] = useState<number>(0);
   const [notes, setNotes] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // Receipt Modal State
   const [lastCompletedSale, setLastCompletedSale] = useState<Sale | null>(null);
@@ -98,37 +99,62 @@ export const QuickSalePOS: React.FC = () => {
   const finalPayable = Math.max(0, cartTotal - discount);
 
   const handleCompleteSale = () => {
+    if (isSubmitting) return;
+
     if (cart.length === 0) {
       showToast('Cart is empty. Please select products.', 'error');
       return;
     }
 
-    const customerObj = !isWalkIn ? customers.find(c => c.id === selectedCustomerId) : null;
-    const custName = customerObj ? customerObj.name : guestName || 'Walk-in Customer';
+    setIsSubmitting(true);
 
-    const recorded = recordSale({
-      date: new Date().toISOString().split('T')[0],
-      customerId: customerObj ? customerObj.id : undefined,
-      customerName: custName,
-      isWalkIn,
-      items: cart,
-      totalAmount: cartTotal,
-      discount,
-      finalAmount: finalPayable,
-      amountPaid: finalPayable,
-      paymentStatus: 'PAID',
-      paymentMethod,
-      notes
-    });
+    try {
+      const customerObj = !isWalkIn ? customers.find(c => c.id === selectedCustomerId) : null;
+      const custName = customerObj ? customerObj.name : guestName.trim() || 'Walk-in Customer';
 
-    setLastCompletedSale(recorded);
-    setIsReceiptModalOpen(true);
-    showToast(`Sale recorded successfully for ${custName}!`);
+      // Deep copy cart line items to guarantee price and quantity snapshot preservation
+      const itemsSnapshot = cart.map(item => ({
+        productId: item.productId,
+        productName: item.productName,
+        packageId: item.packageId,
+        quantityMl: Number(item.quantityMl) || 0,
+        unitPrice: Number(item.unitPrice) || 0,
+        subtotal: Number(item.subtotal) || 0
+      }));
 
-    // Reset Cart
-    setCart([]);
-    setDiscount(0);
-    setNotes('');
+      const recorded = recordSale({
+        date: getLocalDateString(),
+        customerId: customerObj ? customerObj.id : undefined,
+        customerName: custName,
+        isWalkIn,
+        items: itemsSnapshot,
+        totalAmount: cartTotal,
+        discount,
+        finalAmount: finalPayable,
+        amountPaid: finalPayable,
+        paymentStatus: 'PAID',
+        paymentMethod,
+        notes: notes.trim() || undefined
+      });
+
+      if (!recorded || !recorded.id) {
+        throw new Error('Transaction creation failed.');
+      }
+
+      setLastCompletedSale(recorded);
+      setIsReceiptModalOpen(true);
+      showToast(`Sale #${recorded.id.slice(0, 8)} recorded successfully for ${custName}!`);
+
+      // Reset Cart state
+      setCart([]);
+      setDiscount(0);
+      setNotes('');
+    } catch (error: any) {
+      console.error('Quick sale checkout failed:', error);
+      showToast(error?.message || 'Failed to record sale transaction. Please retry.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handlePrintReceipt = () => {
@@ -444,11 +470,11 @@ export const QuickSalePOS: React.FC = () => {
               variant="primary"
               size="lg"
               onClick={handleCompleteSale}
-              disabled={cart.length === 0}
-              className="w-full font-bold shadow-card"
+              disabled={cart.length === 0 || isSubmitting}
+              className="w-full font-bold shadow-card disabled:opacity-50"
             >
               <CheckCircle2 className="w-4 h-4 mr-2 text-brand-gold" />
-              Complete Sale & Print Receipt
+              {isSubmitting ? 'Recording Sale...' : 'Complete Sale & Print Receipt'}
             </Button>
           </div>
         </div>

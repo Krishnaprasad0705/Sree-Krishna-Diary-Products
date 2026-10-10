@@ -25,7 +25,7 @@ import {
   initialBusinessSettings,
   initialStockItems
 } from './initialData';
-import { calculateCustomerLedger } from './calculations';
+import { calculateCustomerLedger, getLocalDateString } from './calculations';
 
 interface StoreContextType {
   // State
@@ -383,18 +383,34 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // 7. Sales & POS Actions
   const recordSale = (saleData: Omit<Sale, 'id' | 'recordedAt'>): Sale => {
+    const saleId = `sale-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+    const recordedAt = new Date().toISOString();
+    const saleDate = saleData.date || getLocalDateString();
+
     const newSale: Sale = {
       ...saleData,
-      id: `sale-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      recordedAt: new Date().toISOString(),
+      id: saleId,
+      date: saleDate,
+      recordedAt,
     };
-    setSales(prev => [newSale, ...prev]);
+
+    setSales(prev => {
+      const nextSales = [newSale, ...prev];
+      try {
+        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(nextSales));
+      } catch (err) {
+        console.warn('Failed to immediately persist sale:', err);
+      }
+      return nextSales;
+    });
 
     // If walk-in sale paid at POS, or customer sale paid at POS
-    if (settings.enableStockTracking) {
+    if (settings.enableStockTracking && Array.isArray(saleData.items)) {
       saleData.items.forEach(item => {
-        const liters = item.quantityMl / 1000;
-        adjustStock(item.productId, -liters, 'SALES_DEDUCTION', `POS Sale #${newSale.id.slice(0, 6)} to ${newSale.customerName}`);
+        const liters = (Number(item.quantityMl) || 0) / 1000;
+        if (liters > 0) {
+          adjustStock(item.productId, -liters, 'SALES_DEDUCTION', `POS Sale #${newSale.id.slice(0, 6)} to ${newSale.customerName}`);
+        }
       });
     }
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   User,
   Phone,
@@ -15,7 +15,8 @@ import {
   CheckCircle2,
   AlertCircle,
   TrendingUp,
-  Receipt
+  Receipt,
+  UserX
 } from 'lucide-react';
 import { Customer, Subscription } from '../../types';
 import { useStore } from '../../lib/store';
@@ -59,32 +60,108 @@ export const CustomerProfileModal: React.FC<CustomerProfileModalProps> = ({
   } = useStore();
   const { showToast } = useToast();
 
-  if (!customerId) return null;
-  const customer = customers.find(c => c.id === customerId);
-  if (!customer) return null;
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
-  const subscription = subscriptions.find(s => s.customerId === customer.id);
-  const ledger = getCustomerLedger(customer.id);
-  const currentBalance = ledger ? ledger.currentBalance : 0;
+  // Safe Customer Lookup
+  const customer = useMemo(() => {
+    if (!customerId) return null;
+    return (customers || []).find(c => c && c.id === customerId) || null;
+  }, [customers, customerId]);
+
+  const subscription = useMemo(() => {
+    if (!customer) return undefined;
+    return (subscriptions || []).find(s => s && s.customerId === customer.id);
+  }, [subscriptions, customer]);
+
+  const ledger = useMemo(() => {
+    if (!customer) return null;
+    try {
+      return getCustomerLedger(customer.id);
+    } catch (err) {
+      console.error('Failed to calculate customer ledger:', err);
+      return null;
+    }
+  }, [customer, getCustomerLedger]);
+
+  const currentBalance = ledger ? (Number(ledger.currentBalance) || 0) : 0;
   const isCredit = currentBalance < 0;
 
-  // Filtered lists for tabs
-  const customerDeliveries = deliveries
-    .filter(d => d.customerId === customer.id)
-    .sort((a, b) => b.date.localeCompare(a.date));
+  // Filtered lists for tabs with null-safe sorting
+  const customerDeliveries = useMemo(() => {
+    if (!customer) return [];
+    return (deliveries || [])
+      .filter(d => d && d.customerId === customer.id)
+      .sort((a, b) => {
+        const cmp = (b.date || '').localeCompare(a.date || '');
+        if (cmp !== 0) return cmp;
+        return (b.recordedAt || '').localeCompare(a.recordedAt || '');
+      });
+  }, [deliveries, customer]);
 
-  const customerExtras = customerDeliveries.filter(d => d.extraQuantityMl > 0);
-  const customerSales = sales.filter(s => s.customerId === customer.id);
+  const customerExtras = useMemo(() => {
+    return customerDeliveries.filter(d => (Number(d.extraQuantityMl) || 0) > 0);
+  }, [customerDeliveries]);
 
-  const customerPayments = payments
-    .filter(p => p.customerId === customer.id)
-    .sort((a, b) => b.date.localeCompare(a.date));
+  const customerSales = useMemo(() => {
+    if (!customer) return [];
+    return (sales || [])
+      .filter(s => s && s.customerId === customer.id)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  }, [sales, customer]);
 
-  const customerInvoices = invoices
-    .filter(inv => inv.customerId === customer.id)
-    .sort((a, b) => b.periodStart.localeCompare(a.periodStart));
+  const customerPayments = useMemo(() => {
+    if (!customer) return [];
+    return (payments || [])
+      .filter(p => p && p.customerId === customer.id)
+      .sort((a, b) => {
+        const cmp = (b.date || '').localeCompare(a.date || '');
+        if (cmp !== 0) return cmp;
+        return (b.recordedAt || '').localeCompare(a.recordedAt || '');
+      });
+  }, [payments, customer]);
 
-  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const customerInvoices = useMemo(() => {
+    if (!customer) return [];
+    return (invoices || [])
+      .filter(inv => inv && inv.customerId === customer.id)
+      .sort((a, b) => (b.periodStart || '').localeCompare(a.periodStart || ''));
+  }, [invoices, customer]);
+
+  if (!isOpen) return null;
+
+  // Friendly "Customer Not Found" state instead of an unexplained blank screen!
+  if (!customer) {
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Customer Profile"
+        subtitle="Customer lookup status"
+        maxWidth="md"
+      >
+        <div className="py-8 px-4 text-center space-y-4">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+            <UserX className="w-7 h-7" />
+          </div>
+          <div>
+            <h3 className="font-serif text-xl font-bold text-stone-800">
+              Customer Not Found
+            </h3>
+            <p className="text-xs text-stone-500 mt-1 max-w-sm mx-auto">
+              {customerId
+                ? `Customer profile (ID: ${customerId}) could not be located in the directory. It may have been archived or deleted.`
+                : 'No customer selected.'}
+            </p>
+          </div>
+          <div className="pt-2">
+            <Button variant="primary" size="sm" onClick={onClose}>
+              Return to Customer Directory
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   const handleArchive = () => {
     archiveCustomer(customer.id);
@@ -102,12 +179,16 @@ export const CustomerProfileModal: React.FC<CustomerProfileModalProps> = ({
     }
   };
 
+  const addedDateFormatted = customer.createdAt
+    ? new Date(customer.createdAt).toLocaleDateString('en-IN')
+    : 'Registered';
+
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={customer.name}
-      subtitle={`Customer ID: ${customer.id.slice(0, 10)} • Added on ${new Date(customer.createdAt).toLocaleDateString('en-IN')}`}
+      title={customer.name || 'Customer Profile'}
+      subtitle={`Customer ID: ${(customer.id || '').slice(0, 10)} • Added on ${addedDateFormatted}`}
       maxWidth="3xl"
     >
       <div className="space-y-6">
@@ -363,11 +444,11 @@ export const CustomerProfileModal: React.FC<CustomerProfileModalProps> = ({
                       className="flex items-center justify-between p-3 rounded-xl bg-amber-50/50 border border-amber-200/60 text-xs"
                     >
                       <div>
-                        <span className="font-bold text-stone-800">{ex.date}</span>: Extra Milk ({formatVolume(ex.extraQuantityMl)})
+                        <span className="font-bold text-stone-800">{ex.date || ''}</span>: Extra Milk ({formatVolume(Number(ex.extraQuantityMl) || 0)})
                         {ex.notes && <p className="text-[11px] text-stone-500">{ex.notes}</p>}
                       </div>
                       <span className="font-bold text-amber-900 font-serif">
-                        {formatCurrency((ex.extraQuantityMl / 1000) * ex.unitPricePerLiter)}
+                        {formatCurrency(((Number(ex.extraQuantityMl) || 0) / 1000) * (Number(ex.unitPricePerLiter) || 60))}
                       </span>
                     </div>
                   ))}
@@ -378,11 +459,11 @@ export const CustomerProfileModal: React.FC<CustomerProfileModalProps> = ({
                       className="flex items-center justify-between p-3 rounded-xl bg-emerald-50/50 border border-emerald-200/60 text-xs"
                     >
                       <div>
-                        <span className="font-bold text-stone-800">{s.date}</span>: Direct Purchase (
-                        {s.items.map(i => i.productName).join(', ')})
+                        <span className="font-bold text-stone-800">{s.date || ''}</span>: Direct Purchase (
+                        {Array.isArray(s.items) ? s.items.map(i => i?.productName || 'Dairy Item').join(', ') : 'Direct Counter Purchase'})
                       </div>
                       <span className="font-bold text-emerald-900 font-serif">
-                        {formatCurrency(s.finalAmount)}
+                        {formatCurrency(Number(s.finalAmount) || 0)}
                       </span>
                     </div>
                   ))}

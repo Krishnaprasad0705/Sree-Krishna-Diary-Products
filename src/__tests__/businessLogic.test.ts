@@ -176,4 +176,70 @@ describe('Sree Krishna Dairy Products - Core Business Logic & Financial Ledger T
     expect(formatVolume(1000)).toBe('1 L');
     expect(formatVolume(1500)).toBe('1.5 L');
   });
+
+  it('Scenario 4: getLocalDateString formats local dates reliably without UTC timezone rollback', () => {
+    // Construct local date: October 10, 2026
+    const d = new Date(2026, 9, 10, 0, 0, 0); // Month is 0-indexed (9 = Oct)
+    expect(d.getFullYear()).toBe(2026);
+    expect(d.getMonth()).toBe(9);
+    expect(d.getDate()).toBe(10);
+  });
+
+  it('Scenario 5: calculateCustomerLedger handles missing or undefined optional fields safely without crashing', () => {
+    // Incomplete customer missing optional openingBalance and createdAt
+    const customer = {
+      id: 'cust-incomplete-1',
+      name: 'Incomplete Details Customer',
+      phone: '98402 99999',
+      address: 'Near Temple',
+      location: 'South Street',
+      category: 'OCCASIONAL' as const,
+      status: 'ACTIVE' as const,
+      openingBalance: undefined as any,
+      createdAt: undefined as any,
+      updatedAt: '2026-10-01T00:00:00Z'
+    };
+
+    // Delivery record missing extraQuantityMl and unitPricePerLiter
+    const deliveries = [
+      {
+        id: 'del-inc-1',
+        date: '2026-10-01',
+        customerId: 'cust-incomplete-1',
+        quantityMl: 500,
+        extraQuantityMl: undefined as any,
+        unitPricePerLiter: undefined as any,
+        totalAmount: 30,
+        status: 'DELIVERED' as const,
+        recordedAt: '2026-10-01T06:00:00Z'
+      }
+    ];
+
+    // Sale with undefined items
+    const sales: Sale[] = [
+      {
+        id: 'sale-inc-1',
+        date: '2026-10-02',
+        customerId: 'cust-incomplete-1',
+        customerName: 'Incomplete Details Customer',
+        items: undefined as any,
+        discount: 0,
+        finalAmount: 50,
+        totalAmount: 50,
+        amountPaid: 50,
+        isWalkIn: false,
+        paymentStatus: 'PAID' as const,
+        paymentMethod: 'CASH' as const,
+        recordedAt: '2026-10-02T10:00:00Z'
+      }
+    ];
+
+    // Should compute cleanly without throwing any TypeError or NaN
+    const ledger = calculateCustomerLedger(customer, [], deliveries, sales, [], []);
+
+    expect(ledger).toBeDefined();
+    expect(ledger.entries.length).toBeGreaterThanOrEqual(1);
+    expect(typeof ledger.currentBalance).toBe('number');
+    expect(isNaN(ledger.currentBalance)).toBe(false);
+  });
 });

@@ -33,7 +33,7 @@ import { useStore } from '../../lib/store';
 import { MetricCard } from '../common/MetricCard';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
-import { formatCurrency, formatVolume } from '../../lib/calculations';
+import { formatCurrency, formatVolume, getLocalDateString } from '../../lib/calculations';
 
 interface DashboardViewProps {
   onNavigate: (tab: string, entityId?: string) => void;
@@ -55,35 +55,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onQuic
     settings
   } = useStore();
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getLocalDateString();
 
-  // Helper date filtering
+  // Helper date filtering using accurate local dates without UTC timezone shift
   const filteredData = useMemo(() => {
     const now = new Date();
-    let startDate = new Date();
+    let startStr = '';
+    let endStr = getLocalDateString(now);
 
     if (timeFilter === 'today') {
-      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      startStr = getLocalDateString(now);
+      endStr = getLocalDateString(now);
     } else if (timeFilter === 'yesterday') {
-      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      startStr = getLocalDateString(yesterday);
+      endStr = getLocalDateString(yesterday);
     } else if (timeFilter === '7days') {
-      startDate = new Date(now.getTime() - 7 * 86400000);
+      const d7 = new Date(now);
+      d7.setDate(d7.getDate() - 6);
+      startStr = getLocalDateString(d7);
+      endStr = getLocalDateString(now);
     } else if (timeFilter === 'thisMonth') {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      startStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      endStr = getLocalDateString(now);
     } else if (timeFilter === 'lastMonth') {
-      startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+      const lastMonthNum = now.getMonth() === 0 ? 12 : now.getMonth();
+      const lastDayOfPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
+      startStr = `${lastMonthYear}-${String(lastMonthNum).padStart(2, '0')}-01`;
+      endStr = `${lastMonthYear}-${String(lastMonthNum).padStart(2, '0')}-${String(lastDayOfPrevMonth).padStart(2, '0')}`;
     }
 
-    const startStr = startDate.toISOString().split('T')[0];
-    const endStr = timeFilter === 'yesterday'
-      ? startDate.toISOString().split('T')[0]
-      : timeFilter === 'lastMonth'
-      ? new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0]
-      : todayStr;
-
-    const filteredDeliveries = deliveries.filter(d => d.date >= startStr && d.date <= endStr);
-    const filteredSales = sales.filter(s => s.date >= startStr && s.date <= endStr);
-    const filteredPayments = payments.filter(p => p.date >= startStr && p.date <= endStr);
+    const filteredDeliveries = (deliveries || []).filter(d => d && d.date >= startStr && d.date <= endStr);
+    const filteredSales = (sales || []).filter(s => s && s.date >= startStr && s.date <= endStr);
+    const filteredPayments = (payments || []).filter(p => p && p.date >= startStr && p.date <= endStr);
 
     return {
       deliveries: filteredDeliveries,
@@ -92,29 +98,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onQuic
       startStr,
       endStr
     };
-  }, [timeFilter, deliveries, sales, payments, todayStr]);
+  }, [timeFilter, deliveries, sales, payments]);
 
   // Calculations
   const stats = useMemo(() => {
     // 1. Delivery volume
-    const totalMilkMl = filteredData.deliveries.reduce((sum, d) => sum + d.quantityMl + d.extraQuantityMl, 0);
-    const totalDeliveryCharges = filteredData.deliveries.reduce((sum, d) => sum + d.totalAmount, 0);
+    const totalMilkMl = filteredData.deliveries.reduce((sum, d) => sum + (Number(d.quantityMl) || 0) + (Number(d.extraQuantityMl) || 0), 0);
+    const totalDeliveryCharges = filteredData.deliveries.reduce((sum, d) => sum + (Number(d.totalAmount) || 0), 0);
 
     // 2. Sales revenue
-    const totalSalesRev = filteredData.sales.reduce((sum, s) => sum + s.finalAmount, 0);
+    const totalSalesRev = filteredData.sales.reduce((sum, s) => sum + (Number(s.finalAmount) || 0), 0);
     let gheeSalesMl = 0;
     let gheeSalesAmount = 0;
     filteredData.sales.forEach(s => {
-      s.items.forEach(item => {
-        if (item.productName.toLowerCase().includes('ghee')) {
-          gheeSalesMl += item.quantityMl;
-          gheeSalesAmount += item.subtotal;
+      (s.items || []).forEach(item => {
+        if ((item.productName || '').toLowerCase().includes('ghee')) {
+          gheeSalesMl += Number(item.quantityMl) || 0;
+          gheeSalesAmount += Number(item.subtotal) || 0;
         }
       });
     });
 
-    // 3. Payments collected
-    const totalPaymentsCollected = filteredData.payments.reduce((sum, p) => sum + p.amount, 0);
+    // 3. Payments collected (direct customer settlements + POS counter sales collections)
+    const directPayments = filteredData.payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+    const posPayments = filteredData.sales.reduce((sum, s) => {
+      const paid = Number(s.amountPaid);
+      if (!isNaN(paid) && paid > 0) return sum + paid;
+      if (s.paymentStatus === 'PAID') return sum + (Number(s.finalAmount) || 0);
+      return sum;
+    }, 0);
+    const totalPaymentsCollected = directPayments + posPayments;
 
     // 4. Overall Outstanding Receivables across all customers
     let totalReceivables = 0;
@@ -168,33 +181,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onQuic
     const now = new Date();
 
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * 86400000);
-      const dStr = d.toISOString().split('T')[0];
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dStr = getLocalDateString(d);
       const display = d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric' });
       days[dStr] = { date: dStr, displayDate: display, milkSales: 0, gheeSales: 0, payments: 0 };
     }
 
-    deliveries.forEach(del => {
-      if (days[del.date]) {
-        days[del.date].milkSales += del.totalAmount;
+    (deliveries || []).forEach(del => {
+      if (del && days[del.date]) {
+        days[del.date].milkSales += Number(del.totalAmount) || 0;
       }
     });
 
-    sales.forEach(sale => {
-      if (days[sale.date]) {
-        sale.items.forEach(item => {
-          if (item.productName.toLowerCase().includes('ghee')) {
-            days[sale.date].gheeSales += item.subtotal;
+    (sales || []).forEach(sale => {
+      if (sale && days[sale.date]) {
+        (sale.items || []).forEach(item => {
+          if ((item.productName || '').toLowerCase().includes('ghee')) {
+            days[sale.date].gheeSales += Number(item.subtotal) || 0;
           } else {
-            days[sale.date].milkSales += item.subtotal;
+            days[sale.date].milkSales += Number(item.subtotal) || 0;
           }
         });
+        const paid = Number(sale.amountPaid);
+        if (!isNaN(paid) && paid > 0) {
+          days[sale.date].payments += paid;
+        } else if (sale.paymentStatus === 'PAID') {
+          days[sale.date].payments += Number(sale.finalAmount) || 0;
+        }
       }
     });
 
-    payments.forEach(pay => {
-      if (days[pay.date]) {
-        days[pay.date].payments += pay.amount;
+    (payments || []).forEach(pay => {
+      if (pay && days[pay.date]) {
+        days[pay.date].payments += Number(pay.amount) || 0;
       }
     });
 

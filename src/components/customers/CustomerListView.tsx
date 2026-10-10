@@ -28,11 +28,15 @@ import { formatCurrency, formatVolume } from '../../lib/calculations';
 
 interface CustomerListViewProps {
   initialSelectedCustomerId?: string;
+  selectedCustomerId?: string | null;
+  onSelectCustomer?: (customerId: string | null) => void;
   onQuickAction: (action: 'record_delivery' | 'record_payment' | 'generate_bill', customerId?: string) => void;
 }
 
 export const CustomerListView: React.FC<CustomerListViewProps> = ({
   initialSelectedCustomerId,
+  selectedCustomerId: controlledSelectedCustomerId,
+  onSelectCustomer,
   onQuickAction
 }) => {
   const { customers, subscriptions, getCustomerBalance, deleteCustomer } = useStore();
@@ -43,9 +47,23 @@ export const CustomerListView: React.FC<CustomerListViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<'ALL' | CustomerStatus>('ACTIVE');
   const [sortBy, setSortBy] = useState<'name' | 'balance' | 'recent'>('name');
 
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(
+  const [internalSelectedCustomerId, setInternalSelectedCustomerId] = useState<string | null>(
     initialSelectedCustomerId || null
   );
+
+  const activeSelectedCustomerId =
+    controlledSelectedCustomerId !== undefined
+      ? controlledSelectedCustomerId
+      : internalSelectedCustomerId;
+
+  const handleSelectCustomer = (id: string | null) => {
+    if (onSelectCustomer) {
+      onSelectCustomer(id);
+    } else {
+      setInternalSelectedCustomerId(id);
+    }
+  };
+
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [customerToEdit, setCustomerToEdit] = useState<Customer | null>(null);
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
@@ -86,15 +104,15 @@ export const CustomerListView: React.FC<CustomerListViewProps> = ({
     <div className="space-y-6 animate-fade-in">
       {/* Modals */}
       <CustomerProfileModal
-        customerId={selectedCustomerId}
-        isOpen={Boolean(selectedCustomerId)}
-        onClose={() => setSelectedCustomerId(null)}
+        customerId={activeSelectedCustomerId}
+        isOpen={Boolean(activeSelectedCustomerId)}
+        onClose={() => handleSelectCustomer(null)}
         onEditCustomer={c => {
-          setSelectedCustomerId(null);
+          handleSelectCustomer(null);
           handleOpenEdit(c);
         }}
         onQuickAction={(action, id) => {
-          setSelectedCustomerId(null);
+          handleSelectCustomer(null);
           onQuickAction(action, id);
         }}
       />
@@ -217,7 +235,7 @@ export const CustomerListView: React.FC<CustomerListViewProps> = ({
               <div
                 key={customer.id}
                 className="bg-white rounded-3xl p-5 shadow-card border border-stone-200/80 hover:border-brand-leaf/50 transition-all flex flex-col justify-between group cursor-pointer"
-                onClick={() => setSelectedCustomerId(customer.id)}
+                onClick={() => handleSelectCustomer(customer.id)}
               >
                 <div>
                   {/* Top Bar: Name & Badges */}
@@ -305,7 +323,7 @@ export const CustomerListView: React.FC<CustomerListViewProps> = ({
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => setSelectedCustomerId(customer.id)}
+                      onClick={() => handleSelectCustomer(customer.id)}
                       title="Open Profile"
                       className="p-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 transition-colors"
                     >

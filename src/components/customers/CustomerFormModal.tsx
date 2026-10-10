@@ -4,6 +4,7 @@ import { useStore } from '../../lib/store';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useToast } from '../common/Toast';
+import { getLocalDateString } from '../../lib/calculations';
 
 interface CustomerFormModalProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ export const CustomerFormModal: React.FC<CustomerFormModalProps> = ({
   const [category, setCategory] = useState<CustomerCategory>('REGULAR');
   const [notes, setNotes] = useState('');
   const [openingBalance, setOpeningBalance] = useState<number>(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Subscription setup
   const [enableSubscription, setEnableSubscription] = useState(true);
@@ -34,7 +36,7 @@ export const CustomerFormModal: React.FC<CustomerFormModalProps> = ({
   const [expectedDailyQuantityMl, setExpectedDailyQuantityMl] = useState<number>(1000);
   const [fixedMonthlyAmount, setFixedMonthlyAmount] = useState<number>(1800);
   const [schedule, setSchedule] = useState<DeliverySchedule>('EVERYDAY');
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [startDate, setStartDate] = useState(getLocalDateString());
 
   useEffect(() => {
     if (customerToEdit) {
@@ -73,85 +75,103 @@ export const CustomerFormModal: React.FC<CustomerFormModalProps> = ({
       setExpectedDailyQuantityMl(1000);
       setFixedMonthlyAmount(1800);
       setSchedule('EVERYDAY');
-      setStartDate(new Date().toISOString().split('T')[0]);
+      setStartDate(getLocalDateString());
     }
   }, [customerToEdit, isOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
 
-    if (!name.trim() || !phone.trim()) {
-      showToast('Please enter Customer Name and Phone Number', 'error');
+    const trimmedName = name.trim();
+    const cleanPhone = phone.trim().replace(/\s+/g, '');
+
+    if (!trimmedName) {
+      showToast('Please enter customer name', 'error');
       return;
     }
 
-    if (customerToEdit) {
-      updateCustomer(customerToEdit.id, {
-        name,
-        phone,
-        address,
-        location,
-        deliveryInstructions,
-        category,
-        notes,
-        openingBalance
-      });
+    if (!cleanPhone || cleanPhone.length < 7) {
+      showToast('Please enter a valid phone number (minimum 7 digits)', 'error');
+      return;
+    }
 
-      const existingSub = getSubscriptionByCustomerId(customerToEdit.id);
-      if (enableSubscription && category === 'REGULAR') {
-        if (existingSub) {
-          updateSubscription(existingSub.id, {
-            pricingModel,
-            expectedDailyQuantityMl,
-            fixedMonthlyAmount: pricingModel === 'FIXED_RECURRING' ? fixedMonthlyAmount : undefined,
-            schedule,
-            startDate
-          });
-        } else {
+    setIsSubmitting(true);
+
+    try {
+      if (customerToEdit) {
+        updateCustomer(customerToEdit.id, {
+          name: trimmedName,
+          phone: cleanPhone,
+          address: address.trim() || 'Kanchipuram',
+          location: location.trim() || 'Gandhi Road',
+          deliveryInstructions: deliveryInstructions.trim() || undefined,
+          category,
+          notes: notes.trim() || undefined,
+          openingBalance: Number(openingBalance) || 0
+        });
+
+        const existingSub = getSubscriptionByCustomerId(customerToEdit.id);
+        if (enableSubscription && category === 'REGULAR') {
+          if (existingSub) {
+            updateSubscription(existingSub.id, {
+              pricingModel,
+              expectedDailyQuantityMl,
+              fixedMonthlyAmount: pricingModel === 'FIXED_RECURRING' ? fixedMonthlyAmount : undefined,
+              schedule,
+              startDate
+            });
+          } else {
+            addSubscription({
+              customerId: customerToEdit.id,
+              pricingModel,
+              expectedDailyQuantityMl,
+              fixedMonthlyAmount: pricingModel === 'FIXED_RECURRING' ? fixedMonthlyAmount : undefined,
+              status: 'ACTIVE',
+              schedule,
+              startDate,
+              notes: 'Created during customer update'
+            });
+          }
+        }
+
+        showToast(`Customer "${trimmedName}" updated successfully`);
+      } else {
+        const created = addCustomer({
+          name: trimmedName,
+          phone: cleanPhone,
+          address: address.trim() || 'Kanchipuram',
+          location: location.trim() || 'Gandhi Road',
+          deliveryInstructions: deliveryInstructions.trim() || undefined,
+          category,
+          status: 'ACTIVE',
+          notes: notes.trim() || undefined,
+          openingBalance: Number(openingBalance) || 0
+        });
+
+        if (enableSubscription && category === 'REGULAR') {
           addSubscription({
-            customerId: customerToEdit.id,
+            customerId: created.id,
             pricingModel,
             expectedDailyQuantityMl,
             fixedMonthlyAmount: pricingModel === 'FIXED_RECURRING' ? fixedMonthlyAmount : undefined,
             status: 'ACTIVE',
             schedule,
             startDate,
-            notes: 'Created during customer update'
+            notes: 'Configured during customer creation'
           });
         }
+
+        showToast(`Customer "${trimmedName}" created successfully`);
       }
 
-      showToast(`Customer "${name}" updated successfully`);
-    } else {
-      const created = addCustomer({
-        name,
-        phone,
-        address: address || 'Kanchipuram',
-        location: location || 'Main Town',
-        deliveryInstructions,
-        category,
-        status: 'ACTIVE',
-        notes,
-        openingBalance
-      });
-
-      if (enableSubscription && category === 'REGULAR') {
-        addSubscription({
-          customerId: created.id,
-          pricingModel,
-          expectedDailyQuantityMl,
-          fixedMonthlyAmount: pricingModel === 'FIXED_RECURRING' ? fixedMonthlyAmount : undefined,
-          status: 'ACTIVE',
-          schedule,
-          startDate,
-          notes: 'Configured during customer creation'
-        });
-      }
-
-      showToast(`Customer "${name}" created successfully`);
+      onClose();
+    } catch (err: any) {
+      console.error('Customer save error:', err);
+      showToast(err?.message || 'Failed to save customer', 'error');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    onClose();
   };
 
   return (
@@ -402,8 +422,8 @@ export const CustomerFormModal: React.FC<CustomerFormModalProps> = ({
           <Button type="button" variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary">
-            {customerToEdit ? 'Save Changes' : 'Create Customer'}
+          <Button type="submit" variant="primary" disabled={isSubmitting} className="disabled:opacity-50">
+            {isSubmitting ? 'Saving...' : customerToEdit ? 'Save Changes' : 'Create Customer'}
           </Button>
         </div>
       </form>
